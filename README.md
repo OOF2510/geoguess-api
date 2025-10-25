@@ -61,12 +61,12 @@ Returns a random Mapillary image along with coordinate metadata:
 
 ```json
 {
-  "imageUrl": "https://images.mapillary.com/...",
+  "imageUrl": "https://scontent-iad3-1.xx.fbcdn.net/m1/v/t6/An-rMI1JBjFNqolZ8PaLWHXY020kJZeBVdFuMwAr_-b7TGrBy9TC5x5IEzZgBUJcgu2V8VEQ_z-4h7zQVkIr-lr2PbkJD3RsfE_cdHSPNhigbxpT7bZk7eRv2lldWoUmcQrtacpAHVrLlMNjJj1bQA?stp=s1024x768&edm=AOnQwmMEAAAA&_nc_gid=YkvmVn0xIBTA98UoYjq5gw&_nc_oc=AdlGVeQnKjsLth2vVppl_glyRAm-LpD-mCLo_FdBJT_5Ph5M-o1Z1NwYeRg2Zy1_EaM&ccb=10-5&oh=00_AfcVvHJnUQjQFRf1AQe6bb4-A6ZnkVMbUHZKxjWBNGcIaQ&oe=692488B3&_nc_sid=201bca",
   "coordinates": {
-    "lat": 48.85845,
-    "lon": 2.2945
+    "lat": 36.714769079885,
+    "lon": 3.0154622847408
   },
-  "countryName": "France"
+  "countryName": "Algeria"
 }
 ```
 
