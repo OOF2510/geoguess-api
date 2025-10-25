@@ -1,16 +1,10 @@
 {
-  "name": "express",
-  "version": "1.0.0",
-  "description": "",
-  "type": "module",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "name": "geoguess-api",
+  "packageManager": "yarn@4.10.3",
   "dependencies": {
-    "@types/express": "^5.0.0",
-    "express": "^4.18.2"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0"
+    "axios": "^1.6.2",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "https": "^1.0.0"
   }
 }
