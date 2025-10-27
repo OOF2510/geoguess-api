@@ -1,6 +1,6 @@
 # geoguess-api
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/OOF2510/geoguess-api&env=MAP_API_KEY&envDescription=Mapillary%20API%20access%20token&envLink=https%3A%2F%2Fwww.mapillary.com%2Fdashboard%2Fdevelopers)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/OOF2510/geoguess-api&env=MAP_API_KEY&envDescription=Mapillary%20API%20access%20token&envLink=https%3A%2F%2Fwww.mapillary.com%2Fdashboard%2Fdevelopers&env=FIREBASE_APP_ID&envDescription=Firebase%20App%20ID&envLink=https%3A%2F%2Fconsole.firebase.google.com&env=FIREBASE_SERVICE_ACCOUNT_KEY&envDescription=Firebase%20service%20account%20JSON&envLink=https%3A%2F%2Ffirebase.google.com%2Fdocs%2Fadmin%2Fsetup&env=FIREBASE_SERVICE_ACCOUNT_KEY_BASE64&envDescription=Firebase%20service%20account%20JSON%20%28base64%29&envLink=https%3A%2F%2Ffirebase.google.com%2Fdocs%2Fadmin%2Fsetup)
 
 An Express-based API that powers a Geoguessr-style game by fetching random street-level images from the Mapillary platform. The service preloads and caches images so clients can quickly serve players new locations to guess.
 
@@ -16,6 +16,7 @@ An Express-based API that powers a Geoguessr-style game by fetching random stree
 - Node.js 18+ (tested with modern LTS versions)
 - Yarn (the repo uses `yarn@4.10.3` via Corepack)
 - Mapillary API access token (`MAP_API_KEY`)
+- Firebase Admin SDK configured (`FIREBASE_APP_ID`, `FIREBASE_SERVICE_ACCOUNT_KEY` or `FIREBASE_SERVICE_ACCOUNT_KEY_BASE64`)
 
 ## Setup
 
@@ -25,7 +26,8 @@ An Express-based API that powers a Geoguessr-style game by fetching random stree
    yarn install
    ```
 
-2. Create a `.env` file alongside `index.js` and add your Mapillary token:
+- Create a `.env` file alongside `index.js` and add your Mapillary token:
+
 
    ```env
    MAP_API_KEY=your_mapillary_access_token
@@ -38,7 +40,7 @@ An Express-based API that powers a Geoguessr-style game by fetching random stree
 ## One-click deploy
 
 - Use the **Deploy with Vercel** button above to clone this repository into a new Vercel project.
-- During setup, provide the `MAP_API_KEY` value in the Environment Variables step (or add it later under *Settings → Environment Variables*).
+- During setup, provide the `MAP_API_KEY` and Firebase credentials (`FIREBASE_APP_ID`, `FIREBASE_SERVICE_ACCOUNT_KEY` or `FIREBASE_SERVICE_ACCOUNT_KEY_BASE64`) in the Environment Variables step. You can add or modify these later under *Settings → Environment Variables*.
 - After deployment, Vercel will expose the API under your chosen project domain.
 
 ## Running the server
@@ -55,7 +57,7 @@ On boot the service fills the image cache (10 images by default). Whenever a req
 
 ## API
 
-### `GET /getImage`
+### `GET /getImage` (Public)
 
 Returns a random Mapillary image along with coordinate metadata:
 
@@ -73,6 +75,88 @@ Returns a random Mapillary image along with coordinate metadata:
 - If cached images are available, the endpoint serves one immediately and triggers a background refill.
 - If the cache is empty, the server fetches a fresh image on demand before responding.
 - `countryName` falls back to `"Unknown"` when reverse geocoding cannot determine a country.
+
+### `POST /game/start` (Protected)
+
+Starts a new game session, which is required to submit a score. This endpoint is protected by Firebase App Check.
+
+**Request Headers:**
+- `X-Firebase-AppCheck`: A valid Firebase App Check token.
+
+**Response:**
+```json
+{
+  "gameSessionId": "664e7d5d7e5d8a9f3b1c6d8e",
+  "seed": "jklmno12345",
+  "expiresAt": "2024-05-22T21:00:00.000Z"
+}
+```
+- `gameSessionId`: A unique ID for this game instance. It must be sent when submitting a score.
+- `expiresAt`: An ISO 8601 timestamp indicating when the session expires (typically 1 hour after creation).
+
+### `POST /game/submit` (Protected)
+
+Submits a score for a completed game. This endpoint is protected by Firebase App Check.
+
+**Request Headers:**
+- `X-Firebase-AppCheck`: A valid Firebase App Check token.
+
+**Request Body:**
+```json
+{
+  "gameSessionId": "664e7d5d7e5d8a9f3b1c6d8e",
+  "score": 95000,
+  "metadata": { "rounds": 5 }
+}
+```
+- `gameSessionId` (required): The ID received from `/game/start`.
+- `score` (required): The player's final score as a number.
+- `metadata` (optional): Any extra data you want to store with the score.
+
+The server validates that the `gameSessionId` is valid, has not expired, and has not already been used to submit a score.
+
+**Response:**
+```json
+{
+  "ok": true
+}
+```
+
+### `GET /leaderboard/top` (Public)
+
+Retrieves the top scores.
+
+**Query Parameters:**
+- `limit` (optional): The number of top scores to return. Defaults to 50, maximum is 100.
+
+**Response:**
+A JSON array of score objects.
+```json
+[
+  {
+    "rank": 1,
+    "score": 99500,
+    "createdAt": "2024-05-22T20:30:00.000Z"
+  },
+  {
+    "rank": 2,
+    "score": 98000,
+    "createdAt": "2024-05-22T19:45:00.000Z"
+  }
+]
+```
+
+### `GET /health` (Public)
+
+A simple health check endpoint.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-05-22T20:55:12.123Z"
+}
+```
 
 ## How it works
 
