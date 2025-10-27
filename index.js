@@ -68,8 +68,21 @@ function ensureSession(req, res, next) {
 async function initializeDatabase() {
   if (isInitialized) return;
   
-  // Connect to MongoDB 
-  const client = new MongoClient(MONGO_URI);
+  // Connect to MongoDB with serverless-optimized options
+  const client = new MongoClient(MONGO_URI, {
+    serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+    connectTimeoutMS: 10000, // Give up initial connection after 10 seconds
+    maxPoolSize: 1, // Maintain up to 1 socket connection for serverless
+    minPoolSize: 0, // Allow connection pool to close completely
+    maxIdleTimeMS: 0, // Close connections after the specified time
+    retryWrites: true,
+    retryReads: true,
+    tls: true,
+    tlsAllowInvalidCertificates: false,
+    tlsAllowInvalidHostnames: false,
+  });
+  
   await client.connect();
   console.log("Connected to MongoDB");
 
