@@ -4,6 +4,7 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const { MongoClient, ObjectId } = require("mongodb");
 
+const admin = require("firebase-admin");
 const cors = require("cors");
 
 const {
@@ -25,6 +26,91 @@ let db;
 let gameSessions;
 let scores;
 let isInitialized = false;
+
+let firebaseAppCheckInitialized = false;
+let firebaseAppCheckInstance;
+
+function initializeFirebaseAppCheck() {
+  if (firebaseAppCheckInitialized) {
+    return;
+  }
+
+  try {
+    if (!admin.apps.length) {
+      const serviceAccountBase64 =
+        process.env.FIREBASE_SERVICE_ACCOUNT_KEY_BASE64;
+      const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+      if (serviceAccountBase64) {
+        const decodedJson = Buffer.from(serviceAccountBase64, "base64").toString(
+          "utf8",
+        );
+        admin.initializeApp({
+          credential: admin.credential.cert(JSON.parse(decodedJson)),
+        });
+      } else if (serviceAccountJson) {
+        admin.initializeApp({
+          credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+        });
+      } else {
+        admin.initializeApp();
+      }
+    }
+
+    if (typeof admin.appCheck !== "function") {
+      throw new Error("Firebase Admin SDK does not expose appCheck()");
+    }
+
+    firebaseAppCheckInitialized = true;
+  } catch (error) {
+    firebaseAppCheckInitialized = false;
+    console.error("Firebase App Check initialization failed:", error);
+  }
+}
+
+initializeFirebaseAppCheck();
+
+function getFirebaseAppCheckInstance() {
+  if (!firebaseAppCheckInitialized) {
+    return null;
+  }
+
+  if (!firebaseAppCheckInstance) {
+    firebaseAppCheckInstance = admin.appCheck();
+  }
+
+  return firebaseAppCheckInstance;
+}
+
+const expectedAppCheckAppId = process.env.FIREBASE_APP_ID;
+
+async function verifyFirebaseAppCheck(req, res, next) {
+  const appCheck = getFirebaseAppCheckInstance();
+
+  if (!appCheck) {
+    return res.status(500).json({ error: "app_check_not_configured" });
+  }
+
+  const token = req.header("X-Firebase-AppCheck");
+
+  if (!token) {
+    return res.status(401).json({ error: "missing_app_check_token" });
+  }
+
+  try {
+    const decodedToken = await appCheck.verifyToken(token);
+
+    if (expectedAppCheckAppId && decodedToken.appId !== expectedAppCheckAppId) {
+      return res.status(401).json({ error: "app_check_app_id_mismatch" });
+    }
+
+    req.appCheckToken = decodedToken;
+    next();
+  } catch (error) {
+    console.error("App Check token verification failed:", error);
+    return res.status(401).json({ error: "invalid_app_check_token" });
+  }
+}
 
 app.use(
   cors({
@@ -81,7 +167,8 @@ async function initializeDatabase() {
     tls: true,
     tlsAllowInvalidCertificates: false,
     tlsAllowInvalidHostnames: false,
-  });
+  },
+);
   
   await client.connect();
   console.log("Connected to MongoDB");
@@ -146,7 +233,7 @@ app.get("/getImage", async (req, res) => {
   });
 
 // Game start: Create game session
-app.post("/game/start", ensureSession, async (req, res) => {
+app.post("/game/start", verifyFirebaseAppCheck, ensureSession, async (req, res) => {
   try {
     await initializeDatabase();
       const sessionId = req.session.id;
@@ -178,7 +265,11 @@ app.post("/game/start", ensureSession, async (req, res) => {
   });
 
 // Submit score
-app.post("/game/submit", ensureSession, async (req, res) => {
+app.post(
+  "/game/submit",
+  verifyFirebaseAppCheck,
+  ensureSession,
+  async (req, res) => {
   try {
     await initializeDatabase();
       const sessionId = req.session.id;
