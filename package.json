@@ -6,8 +6,14 @@
   "packageManager": "yarn@4.10.3",
   "dependencies": {
     "axios": "^1.6.2",
+    "bcryptjs": "^3.0.2",
+    "connect-mongo": "^5.1.0",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
-    "https": "^1.0.0"
+    "express-rate-limit": "^8.1.0",
+    "express-session": "^1.18.2",
+    "https": "^1.0.0",
+    "mongodb": "^6.20.0"
   }
 }
