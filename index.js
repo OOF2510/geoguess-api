@@ -24,6 +24,7 @@ const DB_NAME = process.env.DB_NAME || "geoguess-db";
 let db;
 let gameSessions;
 let scores;
+let isInitialized = false;
 
 app.use(
   cors({
@@ -64,7 +65,9 @@ function ensureSession(req, res, next) {
   next();
 }
 
-async function start() {
+async function initializeDatabase() {
+  if (isInitialized) return;
+  
   // Connect to MongoDB 
   const client = new MongoClient(MONGO_URI);
   await client.connect();
@@ -79,11 +82,14 @@ async function start() {
   await gameSessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // Auto-delete expired
   await scores.createIndex({ score: -1 }); // For leaderboard queries
   await scores.createIndex({ createdAt: -1 });
+  
+  isInitialized = true;
+}
 
-  // Public endpoint: Get random image
-  app.get("/getImage", async (req, res) => {
-    try {
-      if (!process.env.MAP_API_KEY) {
+// Public endpoint: Get random image
+app.get("/getImage", async (req, res) => {
+  try {
+    if (!process.env.MAP_API_KEY) {
         return res.status(500).json({
           error: "Mapillary access token missing in environment variables.",
         });
@@ -126,9 +132,10 @@ async function start() {
     }
   });
 
-  // Game start: Create game session
-  app.post("/game/start", ensureSession, async (req, res) => {
-    try {
+// Game start: Create game session
+app.post("/game/start", ensureSession, async (req, res) => {
+  try {
+    await initializeDatabase();
       const sessionId = req.session.id;
 
       // Generate a random seed for this game
@@ -157,9 +164,10 @@ async function start() {
     }
   });
 
-  // Submit score
-  app.post("/game/submit", ensureSession, async (req, res) => {
-    try {
+// Submit score
+app.post("/game/submit", ensureSession, async (req, res) => {
+  try {
+    await initializeDatabase();
       const sessionId = req.session.id;
       const { gameSessionId, score, metadata } = req.body;
 
@@ -224,9 +232,10 @@ async function start() {
     }
   });
 
-  // Leaderboard: Get top scores (public)
-  app.get("/leaderboard/top", async (req, res) => {
-    try {
+// Leaderboard: Get top scores (public)
+app.get("/leaderboard/top", async (req, res) => {
+  try {
+    await initializeDatabase();
       const limit = parseInt(req.query.limit) || 50;
       const maxLimit = 100;
       const finalLimit = Math.min(limit, maxLimit);
@@ -256,14 +265,15 @@ async function start() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  app.listen(PORT, async () => {
-    console.log(`Geoguess API listening on port ${PORT}`);
-    // Pre-fill cache on startup
+// Pre-fill cache on module load (works in serverless)
+(async () => {
+  try {
     await fillCache(15);
-  });
-}
+    console.log("Image cache pre-filled with 15 images");
+  } catch (error) {
+    console.error("Failed to pre-fill cache:", error);
+  }
+})();
 
-start().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+// Vercel serverless function export
+module.exports = app;
