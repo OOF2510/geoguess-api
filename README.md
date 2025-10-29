@@ -1,167 +1,157 @@
-# geoguess-api
+# 🌐 GeoGuess API
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/OOF2510/geoguess-api&env=MAP_API_KEY&envDescription=Mapillary%20API%20access%20token&envLink=https%3A%2F%2Fwww.mapillary.com%2Fdashboard%2Fdevelopers&env=FIREBASE_APP_ID&envDescription=Firebase%20App%20ID&envLink=https%3A%2F%2Fconsole.firebase.google.com&env=FIREBASE_SERVICE_ACCOUNT_KEY&envDescription=Firebase%20service%20account%20JSON&envLink=https%3A%2F%2Ffirebase.google.com%2Fdocs%2Fadmin%2Fsetup&env=FIREBASE_SERVICE_ACCOUNT_KEY_BASE64&envDescription=Firebase%20service%20account%20JSON%20%28base64%29&envLink=https%3A%2F%2Ffirebase.google.com%2Fdocs%2Fadmin%2Fsetup)
+The backend that powers my [GeoGuess App](https://github.com/oof2510/GeoguessApp), serving fresh Mapillary street-view shots, tagging them with country data, and keeping the global leaderboard flowing with minimal lag.
 
-An Express-based API that powers a Geoguessr-style game by fetching random street-level images from the Mapillary platform. The service preloads and caches images so clients can quickly serve players new locations to guess.
+## 📚 Table of Contents
 
-## Features
+- [Why This Exists](#why-this-exists)
+- [Feature Highlights](#feature-highlights)
+- [How the Image Pipeline Works](#how-the-image-pipeline-works)
+- [How the App Uses It](#how-the-app-uses-it)
+- [Environment Setup](#environment-setup)
+- [Run It Locally](#run-it-locally)
+- [API Endpoints](#api-endpoints)
+- [Tech Stack](#tech-stack)
+- [Contributing](#contributing)
+- [License](#license)
 
-- **Randomized image sourcing**: Tries curated city bounding boxes, land-heavy regions, and fully random geographic boxes to find fresh photos.
-- **Image caching**: Warms a cache of Mapillary images on startup and refills it in the background when the cache runs low to minimize API latency.
-- **Reverse geocoding**: Looks up the country for each image via OpenStreetMap so clients can reveal or validate the location after a guess.
-- **Robust retries**: Adds timeout handling and retry logic around Mapillary requests for improved reliability.
+## ❓ Why This Exists
 
-## Requirements
+Guessing places should feel fast, global, and fair. The API makes that happen by:
+1. Pulling Mapillary imagery from a big list of cities + land-heavy regions.
+2. Keeping a rolling cache warm so the app doesn’t wait on live Mapillary calls.
+3. Limiting the cache to two shots per country so the game stays interesting.
+4. Double-checking country data with both OpenStreetMap’s Nominatim and BigDataCloud.
 
-- Node.js 18+ (tested with modern LTS versions)
-- Yarn (the repo uses `yarn@4.10.3` via Corepack)
-- Mapillary API access token (`MAP_API_KEY`)
-- Firebase Admin SDK configured (`FIREBASE_APP_ID`, `FIREBASE_SERVICE_ACCOUNT_KEY` or `FIREBASE_SERVICE_ACCOUNT_KEY_BASE64`)
+## ✨ Feature Highlights
 
-## Setup
+- **Curated city fallbacks**: Hundreds of cities across North/South America, Europe, Africa, Asia, Oceania, and the Caribbean mean Mapillary almost always has coverage.
+- **Parallel cache fills**: Up to four fetches run at once, and a single background task keeps the cache stocked.
+- **Country diversity cap**: No more than two cached images from the same ISO code, so players see new places.
+- **Geocoding do-over**: If Nominatim says “unknown”, BigDataCloud steps in and we still return a country name + ISO code when possible.
+- **Fast empty-cache flow**: When the cache is dry, the API kicks off a 15-image refill and immediately grabs one live Mapillary image so the user isn’t waiting.
+- **Clean JSON**: Every response returns `imageUrl`, `coordinates`, `countryName`, and `countryCode`.
+- **Rate-limit friendly**: Built-in throttling keeps Mapillary requests comfortably under the 1k/min quota.
+- **Leaderboard support**: Manages session signing, score submissions, and the public top list that the app displays.
 
-1. Install dependencies:
+## 🔄 How the Image Pipeline Works
 
-   ```sh
+```mermaid
+flowchart TD
+    Start[Request /getImage] -->|Cache hit| Pop[Pop cached entry]
+    Pop --> RespondCached[Return cached image]
+    RespondCached --> Refill[Trigger background refill if cache < 5]
+
+    Start -->|Cache empty| Warmup[Fire fillCache(15) in background]
+    Start -->|Cache empty| LiveFetch[getRandomMapillaryImage]
+    LiveFetch --> LiveGeo[Reverse geocode (Nominatim -> BigDataCloud)]
+    LiveGeo --> RespondLive[Return live image]
+
+    Refill --> WorkerPool[Parallel Mapillary fetches (max 4)]
+    WorkerPool --> CheckCountry[Skip if country already has 2 entries]
+    CheckCountry --> Enrich[Reverse geocode for cache entry]
+    Enrich --> CachePush[Push into cache]
+```
+
+- **fillCache(15)** tries up to `15 * 5` fetches so the country cap doesn’t freeze progress.
+- **getRandomMapillaryImage** rotates through city fallbacks, land regions, and fully random boxes.
+- **reverseGeocodeCountry** runs at zoom levels 3 → 5 → 10 before falling back to BigDataCloud.
+
+## 📱 How the App Uses It
+
+The React Native client plugs straight into these endpoints:
+
+- `GET /getImage` → new round image + country info.
+- `POST /game/start` → creates a one-hour session with a unique seed.
+- `POST /game/submit` → saves scores once a session is finished.
+- `GET /leaderboard/top` → grabs the public leaderboard.
+
+Firebase App Check tokens are required for the POST endpoints—the mobile app takes care of attaching them in the `X-Firebase-AppCheck` header.
+
+## 🔐 Environment Setup
+
+1. **Install packages**
+   ```bash
    yarn install
    ```
 
-- Create a `.env` file alongside `index.js` and add your Mapillary token:
-
-
+2. **Drop a `.env` next to `index.js`**
    ```env
-   MAP_API_KEY=your_mapillary_access_token
-   # Optional: override default server port
-   PORT=8080
+   MAP_API_KEY=your_mapillary_token
+   MONGO_URI=mongodb+srv://...
+   FIREBASE_APP_ID=your_firebase_app_id
+   FIREBASE_SERVICE_ACCOUNT_KEY_BASE64=base64_encoded_service_account_json
+   PORT=8080 # optional
    ```
 
-   You can generate a token from the [Mapillary developer dashboard](https://www.mapillary.com/dashboard/developers).
+   - Use `FIREBASE_SERVICE_ACCOUNT_KEY` if you prefer raw JSON instead of Base64.
+   - Need Corepack? `corepack enable` and you’re good.
 
-## One-click deploy
+## 🏃 Run It Locally
 
-- Use the **Deploy with Vercel** button above to clone this repository into a new Vercel project.
-- During setup, provide the `MAP_API_KEY` and Firebase credentials (`FIREBASE_APP_ID`, `FIREBASE_SERVICE_ACCOUNT_KEY` or `FIREBASE_SERVICE_ACCOUNT_KEY_BASE64`) in the Environment Variables step. You can add or modify these later under *Settings → Environment Variables*.
-- After deployment, Vercel will expose the API under your chosen project domain.
-
-## Running the server
-
-Start the Express server:
-
-```sh
+```bash
 node index.js
 ```
 
-By default the API listens on `http://localhost:8080`. Set the `PORT` environment variable to change it.
+- Default port: `8080`
+- Health check: `http://localhost:8080/health`
+- First boot tries to pre-fill 15 images—make sure `MAP_API_KEY` is set.
 
-On boot the service fills the image cache (10 images by default). Whenever a request consumes a cached entry the server refills the cache in the background to keep the pipeline warm.
+## 📡 API Endpoints
 
-## API
-
-### `GET /getImage` (Public)
-
-Returns a random Mapillary image along with coordinate metadata:
-
-```json
-{
-  "imageUrl": "https://scontent-iad3-1.xx.fbcdn.net/m1/v/t6/An-rMI1JBjFNqolZ8PaLWHXY020kJZeBVdFuMwAr_-b7TGrBy9TC5x5IEzZgBUJcgu2V8VEQ_z-4h7zQVkIr-lr2PbkJD3RsfE_cdHSPNhigbxpT7bZk7eRv2lldWoUmcQrtacpAHVrLlMNjJj1bQA?stp=s1024x768&edm=AOnQwmMEAAAA&_nc_gid=YkvmVn0xIBTA98UoYjq5gw&_nc_oc=AdlGVeQnKjsLth2vVppl_glyRAm-LpD-mCLo_FdBJT_5Ph5M-o1Z1NwYeRg2Zy1_EaM&ccb=10-5&oh=00_AfcVvHJnUQjQFRf1AQe6bb4-A6ZnkVMbUHZKxjWBNGcIaQ&oe=692488B3&_nc_sid=201bca",
-  "coordinates": {
-    "lat": 36.714769079885,
-    "lon": 3.0154622847408
-  },
-  "countryName": "Algeria"
-}
-```
-
-- If cached images are available, the endpoint serves one immediately and triggers a background refill.
-- If the cache is empty, the server fetches a fresh image on demand before responding.
-- `countryName` falls back to `"Unknown"` when reverse geocoding cannot determine a country.
-
-### `POST /game/start` (Protected)
-
-Starts a new game session, which is required to submit a score. This endpoint is protected by Firebase App Check.
-
-**Request Headers:**
-- `X-Firebase-AppCheck`: A valid Firebase App Check token.
-
-**Response:**
-```json
-{
-  "gameSessionId": "664e7d5d7e5d8a9f3b1c6d8e",
-  "seed": "jklmno12345",
-  "expiresAt": "2024-05-22T21:00:00.000Z"
-}
-```
-- `gameSessionId`: A unique ID for this game instance. It must be sent when submitting a score.
-- `expiresAt`: An ISO 8601 timestamp indicating when the session expires (typically 1 hour after creation).
-
-### `POST /game/submit` (Protected)
-
-Submits a score for a completed game. This endpoint is protected by Firebase App Check.
-
-**Request Headers:**
-- `X-Firebase-AppCheck`: A valid Firebase App Check token.
-
-**Request Body:**
-```json
-{
-  "gameSessionId": "664e7d5d7e5d8a9f3b1c6d8e",
-  "score": 95000,
-  "metadata": { "rounds": 5 }
-}
-```
-- `gameSessionId` (required): The ID received from `/game/start`.
-- `score` (required): The player's final score as a number.
-- `metadata` (optional): Any extra data you want to store with the score.
-
-The server validates that the `gameSessionId` is valid, has not expired, and has not already been used to submit a score.
-
-**Response:**
-```json
-{
-  "ok": true
-}
-```
-
-### `GET /leaderboard/top` (Public)
-
-Retrieves the top scores.
-
-**Query Parameters:**
-- `limit` (optional): The number of top scores to return. Defaults to 50, maximum is 100.
-
-**Response:**
-A JSON array of score objects.
-```json
-[
+### `GET /getImage`
+- Cache hit → instant response.
+- Cache miss → kicks off `fillCache(15)` and also serves a live Mapillary image right away.
+- Response sample:
+  ```json
   {
-    "rank": 1,
-    "score": 99500,
-    "createdAt": "2024-05-22T20:30:00.000Z"
-  },
-  {
-    "rank": 2,
-    "score": 98000,
-    "createdAt": "2024-05-22T19:45:00.000Z"
+    "imageUrl": "https://images.mapillary.com/...",
+    "coordinates": { "lat": 47.5079, "lon": -18.8792 },
+    "countryName": "Madagascar",
+    "countryCode": "MG"
   }
-]
-```
+  ```
 
-### `GET /health` (Public)
-
-A simple health check endpoint.
-
-**Response:**
+### `POST /game/start` _(Firebase App Check)_
 ```json
 {
-  "status": "ok",
-  "timestamp": "2024-05-22T20:55:12.123Z"
+  "gameSessionId": "6651fb7e5a842e0e4d816f17",
+  "seed": "vj5o4l1x0r8",
+  "expiresAt": "2024-06-08T19:52:31.824Z"
 }
 ```
 
-## How it works
+### `POST /game/submit` _(Firebase App Check)_
+```json
+{
+  "gameSessionId": "6651fb7e5a842e0e4d816f17",
+  "score": 9400,
+  "metadata": { "rounds": 10 }
+}
+```
 
-- Selects random bounding boxes from curated city lists, landmass regions, or fully random areas to maximize the chance of finding imagery.
-- Calls the Mapillary Images API with retry logic and graceful degradation when responses are empty or fail.
-- Converts Mapillary image metadata into a consistent response shape and enriches it with OpenStreetMap reverse geocoding results.
+### `GET /leaderboard/top`
+- Query param `limit` ranges from 1–100.
 
-These decisions are optimized for delivering varied, real-world locations suitable for a geolocation guessing game while keeping latency low.
+### `GET /health`
+- Returns `{ "status": "ok", "timestamp": "..." }`
+
+## 🛠️ Tech Stack
+
+- **Node.js + Express** — core API
+- **MongoDB** — sessions + leaderboard
+- **Mapillary Graph API** — imagery source
+- **OpenStreetMap Nominatim** & **BigDataCloud** — reverse geocoding
+- **Firebase Admin + App Check** — security layer
+- **Axios** — HTTP client with retry + keep-alive
+
+## 🤝 Contributing
+
+Ideas, fixes, PRs—always welcome. If you tweak the cache or geocoding logic, shout out how it affects API latency or accuracy so we can test it properly.
+
+## 📄 License
+
+Licensed under [MPL-2.0](LICENSE).  
+API status? Check the live [health endpoint](https://geo.api.oof2510.space/health).
+
+Made with ❤️ by [oof2510](https://oof2510.space) | [API Status](https://geo.api.oof2510.space/health)

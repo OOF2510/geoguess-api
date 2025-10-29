@@ -2,7 +2,13 @@ const axios = require("axios");
 const https = require("https");
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
-let imageCache = [];
+const imageCache = [];
+const FILL_CACHE_CONCURRENCY = 4;
+let backgroundFillPromise = null;
+const MAX_IMAGES_PER_COUNTRY = 2;
+const MAPILLARY_RATE_LIMIT = 900; // stay safely under the official 1000 req/min cap
+const MAPILLARY_RATE_WINDOW_MS = 60_000;
+const mapillaryCallTimes = [];
 
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
@@ -13,6 +19,104 @@ function normalizeLon(lon) {
   while (l < -180) l += 360;
   while (l > 180) l -= 360;
   return l;
+}
+
+const regionNameFormatter =
+  typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
+    ? new Intl.DisplayNames(["en"], { type: "region" })
+    : null;
+
+const COUNTRY_NAME_FALLBACKS = {
+  XK: "Kosovo",
+  PS: "Palestine",
+  BL: "Saint Barthélemy",
+  BQ: "Bonaire",
+  CW: "Curaçao",
+  SX: "Sint Maarten",
+  TL: "Timor-Leste",
+};
+
+function getCountryNameFromISO(code) {
+  if (!code) return null;
+  const normalized = code.toUpperCase();
+  if (regionNameFormatter) {
+    try {
+      const name = regionNameFormatter.of(normalized);
+      if (name && name !== normalized) {
+        return name;
+      }
+    } catch (err) {
+      // Fallback map handles codes not recognized by Intl.DisplayNames.
+    }
+  }
+  return COUNTRY_NAME_FALLBACKS[normalized] || null;
+}
+
+function extractCountryInfo(data) {
+  if (!data) return null;
+  const addr = data.address || {};
+  let country = (addr.country || addr.country_name || "").trim();
+  let countryCode = (addr.country_code || "").trim().toUpperCase();
+
+  if (country.toLowerCase() === "unknown") {
+    country = "";
+  }
+
+  if (!country && countryCode) {
+    const fallbackName = getCountryNameFromISO(countryCode);
+    if (fallbackName) {
+      country = fallbackName;
+    }
+  }
+
+  if (!country && typeof data.display_name === "string") {
+    const maybeCountry = data.display_name.split(",").pop().trim();
+    const lowercase = maybeCountry.toLowerCase();
+    const isWaterBody =
+      lowercase.includes("ocean") ||
+      lowercase.includes("sea") ||
+      lowercase.includes("bay") ||
+      lowercase.includes("gulf");
+    if (maybeCountry && maybeCountry.length <= 60 && !isWaterBody) {
+      country = maybeCountry;
+    }
+  }
+
+  if (!country && countryCode) {
+    country = countryCode;
+  }
+
+  if (!country) {
+    return null;
+  }
+
+  const normalizedCode = countryCode || null;
+
+  return {
+    country: country.toLowerCase(),
+    countryCode: normalizedCode ? normalizedCode.toUpperCase() : null,
+    displayName: country,
+  };
+}
+
+function getCountryKey(countryCode, countryName) {
+  if (countryCode) return countryCode.toUpperCase();
+  if (countryName) return countryName.trim().toUpperCase();
+  return "UNKNOWN";
+}
+
+function canStoreCountry(countryKey) {
+  let count = 0;
+  for (const item of imageCache) {
+    const key = item.countryKey || getCountryKey(item.countryCode, item.countryName);
+    if (key === countryKey) {
+      count += 1;
+      if (count >= MAX_IMAGES_PER_COUNTRY) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 const LAND_REGIONS = [
@@ -39,7 +143,7 @@ function randomLandBBox() {
 async function getRandomMapillaryImage(token) {
   // 1) Try 3 random cities FIRST
   console.log("Trying 3 city fallbacks");
-  const cities1 = shuffle(getCityFallbackBBoxes()).slice(0, 3);
+  const cities1 = getRandomCityFallbackBBoxes(3);
   for (const c of cities1) {
     const params = new URLSearchParams();
     params.set("access_token", token);
@@ -125,7 +229,7 @@ async function getRandomMapillaryImage(token) {
 
   // 3) Try cities again
   console.log("Trying 3 more city fallbacks");
-  const cities2 = shuffle(getCityFallbackBBoxes()).slice(0, 3);
+  const cities2 = getRandomCityFallbackBBoxes(3);
   for (const c of cities2) {
     const params = new URLSearchParams();
     params.set("access_token", token);
@@ -309,6 +413,9 @@ async function axiosGetWithRetry(url, options, attempts) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {
+      if (typeof url === "string" && url.includes("mapillary.com")) {
+        await enforceMapillaryRateLimit();
+      }
       return await axios.get(url, { ...options, httpsAgent });
     } catch (e) {
       lastErr = e;
@@ -322,6 +429,22 @@ async function axiosGetWithRetry(url, options, attempts) {
   throw lastErr;
 }
 
+async function enforceMapillaryRateLimit() {
+  while (true) {
+    const now = Date.now();
+    while (mapillaryCallTimes.length && now - mapillaryCallTimes[0] >= MAPILLARY_RATE_WINDOW_MS) {
+      mapillaryCallTimes.shift();
+    }
+    if (mapillaryCallTimes.length < MAPILLARY_RATE_LIMIT) {
+      mapillaryCallTimes.push(now);
+      return;
+    }
+    const waitMs =
+      MAPILLARY_RATE_WINDOW_MS - (now - mapillaryCallTimes[0]) + 5;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 200)));
+  }
+}
+
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -331,6 +454,14 @@ function shuffle(arr) {
     a[j] = t;
   }
   return a;
+}
+
+function getRandomCityFallbackBBoxes(count) {
+  const allCities = getCityFallbackBBoxes();
+  if (!count || count >= allCities.length) {
+    return shuffle(allCities);
+  }
+  return shuffle(allCities).slice(0, count);
 }
 
 function getCityFallbackBBoxes() {
@@ -430,9 +561,34 @@ function getCityFallbackBBoxes() {
     { name: "Trondheim", lat: 63.4305, lon: 10.3951 },
     { name: "Aarhus", lat: 56.1629, lon: 10.2039 },
 
+    // Central & Eastern Europe
+    { name: "Vilnius", lat: 54.6872, lon: 25.2797 },
+    { name: "Riga", lat: 56.9496, lon: 24.1052 },
+    { name: "Tallinn", lat: 59.437, lon: 24.7536 },
+    { name: "Kyiv", lat: 50.4501, lon: 30.5234 },
+    { name: "Lviv", lat: 49.8397, lon: 24.0297 },
+    { name: "Sofia", lat: 42.6977, lon: 23.3219 },
+    { name: "Belgrade", lat: 44.7866, lon: 20.4489 },
+    { name: "Zagreb", lat: 45.815, lon: 15.9819 },
+    { name: "Ljubljana", lat: 46.0569, lon: 14.5058 },
+    { name: "Sarajevo", lat: 43.8563, lon: 18.4131 },
+    { name: "Tirana", lat: 41.3275, lon: 19.8187 },
+    { name: "Skopje", lat: 41.9973, lon: 21.428 },
+    { name: "Pristina", lat: 42.6629, lon: 21.1655 },
+    { name: "Chisinau", lat: 47.0105, lon: 28.8638 },
+    { name: "Istanbul", lat: 41.0082, lon: 28.9784 },
+
     // Eastern Europe / Russia
     { name: "Moscow", lat: 55.7558, lon: 37.6173 },
     { name: "St Petersburg", lat: 59.9311, lon: 30.3609 },
+
+    // Central Asia
+    { name: "Almaty", lat: 43.222, lon: 76.8512 },
+    { name: "Astana", lat: 51.1694, lon: 71.4491 },
+    { name: "Tashkent", lat: 41.2995, lon: 69.2401 },
+    { name: "Bishkek", lat: 42.8746, lon: 74.5698 },
+    { name: "Dushanbe", lat: 38.5598, lon: 68.787 },
+    { name: "Ulaanbaatar", lat: 47.8864, lon: 106.9057 },
 
     // East Asia
     { name: "Tokyo", lat: 35.6762, lon: 139.6503 },
@@ -469,6 +625,10 @@ function getCityFallbackBBoxes() {
     { name: "Ho Chi Minh City", lat: 10.8231, lon: 106.6297 },
     { name: "Da Nang", lat: 16.0544, lon: 108.2022 },
     { name: "Hanoi", lat: 21.0278, lon: 105.8342 },
+    { name: "Phnom Penh", lat: 11.5564, lon: 104.9282 },
+    { name: "Siem Reap", lat: 13.3671, lon: 103.8448 },
+    { name: "Vientiane", lat: 17.9757, lon: 102.6331 },
+    { name: "Yangon", lat: 16.8409, lon: 96.1735 },
 
     // Middle East
     { name: "Dubai", lat: 25.2048, lon: 55.2708 },
@@ -482,6 +642,10 @@ function getCityFallbackBBoxes() {
     { name: "Tel Aviv", lat: 32.0853, lon: 34.7818 },
     { name: "Amman", lat: 31.9454, lon: 35.9284 },
     { name: "Beirut", lat: 33.8938, lon: 35.5018 },
+    { name: "Jerusalem", lat: 31.7683, lon: 35.2137 },
+    { name: "Tehran", lat: 35.6892, lon: 51.389 },
+    { name: "Baghdad", lat: 33.3152, lon: 44.3661 },
+    { name: "Manama", lat: 26.2235, lon: 50.5876 },
 
     // Africa
     { name: "Cairo", lat: 30.0444, lon: 31.2357 },
@@ -506,19 +670,56 @@ function getCityFallbackBBoxes() {
     { name: "Algiers", lat: 36.7538, lon: 3.0588 },
     { name: "Dakar", lat: 14.7167, lon: -17.4677 },
     { name: "Abidjan", lat: 5.3453, lon: -4.0244 },
+    { name: "Bamako", lat: 12.6392, lon: -8.0029 },
+    { name: "Ouagadougou", lat: 12.3714, lon: -1.5197 },
+    { name: "Cotonou", lat: 6.3771, lon: 2.4251 },
+    { name: "Lome", lat: 6.1725, lon: 1.2314 },
+    { name: "Freetown", lat: 8.4657, lon: -13.2317 },
+    { name: "Conakry", lat: 9.6412, lon: -13.5784 },
+    { name: "Nouakchott", lat: 18.0735, lon: -15.9582 },
+    { name: "Douala", lat: 4.0511, lon: 9.7679 },
+    { name: "Yaounde", lat: 3.848, lon: 11.5021 },
+    { name: "Luanda", lat: -8.839, lon: 13.2894 },
+    { name: "Lusaka", lat: -15.3875, lon: 28.3228 },
+    { name: "Harare", lat: -17.8252, lon: 31.0335 },
+    { name: "Maputo", lat: -25.9692, lon: 32.5732 },
+    { name: "Windhoek", lat: -22.5609, lon: 17.0658 },
+    { name: "Gaborone", lat: -24.6282, lon: 25.9231 },
+    { name: "Antananarivo", lat: -18.8792, lon: 47.5079 },
+    { name: "Port Louis", lat: -20.1609, lon: 57.5012 },
+    { name: "Khartoum", lat: 15.5007, lon: 32.5599 },
 
     // Latin America
     { name: "Mexico City", lat: 19.4326, lon: -99.1332 },
     { name: "Guadalajara", lat: 20.6597, lon: -103.3496 },
     { name: "Monterrey", lat: 25.6866, lon: -100.3161 },
+    { name: "Tijuana", lat: 32.5149, lon: -117.0382 },
+    { name: "Guatemala City", lat: 14.6349, lon: -90.5069 },
+    { name: "San Salvador", lat: 13.6929, lon: -89.2182 },
+    { name: "Tegucigalpa", lat: 14.0723, lon: -87.1921 },
+    { name: "Managua", lat: 12.114, lon: -86.2362 },
+    { name: "San Jose (CR)", lat: 9.9281, lon: -84.0907 },
+    { name: "Panama City", lat: 8.9824, lon: -79.5199 },
+    { name: "Belize City", lat: 17.5046, lon: -88.1962 },
+    { name: "Havana", lat: 23.1136, lon: -82.3666 },
+    { name: "Santo Domingo", lat: 18.4861, lon: -69.9312 },
+    { name: "San Juan", lat: 18.4655, lon: -66.1057 },
+    { name: "Kingston", lat: 17.9712, lon: -76.792 },
+    { name: "Port of Spain", lat: 10.6549, lon: -61.5019 },
+    { name: "Bridgetown", lat: 13.0975, lon: -59.6167 },
+    { name: "Nassau", lat: 25.0443, lon: -77.3504 },
     { name: "Bogota", lat: 4.711, lon: -74.0721 },
     { name: "Medellin", lat: 6.2442, lon: -75.5812 },
     { name: "Cali", lat: 3.4516, lon: -76.532 },
     { name: "Lima", lat: -12.0464, lon: -77.0428 },
     { name: "Cusco", lat: -13.5319, lon: -71.9675 },
     { name: "Arequipa", lat: -16.409, lon: -71.5375 },
+    { name: "Quito", lat: -0.1807, lon: -78.4678 },
+    { name: "Guayaquil", lat: -2.1709, lon: -79.9224 },
     { name: "Santiago", lat: -33.4489, lon: -70.6693 },
     { name: "Valparaiso", lat: -33.0472, lon: -71.6127 },
+    { name: "La Paz", lat: -16.4897, lon: -68.1193 },
+    { name: "Santa Cruz de la Sierra", lat: -17.7833, lon: -63.1821 },
     { name: "Buenos Aires", lat: -34.6037, lon: -58.3816 },
     { name: "Cordoba", lat: -31.4201, lon: -64.1888 },
     { name: "Rosario", lat: -32.9442, lon: -60.6505 },
@@ -530,6 +731,10 @@ function getCityFallbackBBoxes() {
     { name: "Recife", lat: -8.0476, lon: -34.877 },
     { name: "Fortaleza", lat: -3.7319, lon: -38.5267 },
     { name: "Brasilia", lat: -15.7939, lon: -47.8828 },
+    { name: "Asuncion", lat: -25.2637, lon: -57.5759 },
+    { name: "Montevideo", lat: -34.9011, lon: -56.1645 },
+    { name: "Georgetown (GY)", lat: 6.8013, lon: -58.1551 },
+    { name: "Paramaribo", lat: 5.852, lon: -55.2038 },
 
     // Oceania
     { name: "Sydney", lat: -33.8688, lon: 151.2093 },
@@ -543,6 +748,10 @@ function getCityFallbackBBoxes() {
     { name: "Wellington", lat: -41.2866, lon: 174.7756 },
     { name: "Christchurch", lat: -43.5321, lon: 172.6362 },
     { name: "Hamilton (NZ)", lat: -37.787, lon: 175.2793 },
+    { name: "Port Moresby", lat: -9.4431, lon: 147.1797 },
+    { name: "Suva", lat: -18.1248, lon: 178.4501 },
+    { name: "Noumea", lat: -22.2711, lon: 166.438 },
+    { name: "Honiara", lat: -9.4456, lon: 159.9729 },
 
     // South Asia
     { name: "Delhi", lat: 28.6139, lon: 77.209 },
@@ -613,62 +822,182 @@ function randomBBox() {
 }
 
 async function reverseGeocodeCountry(lat, lon) {
-  try {
-    const url = "https://nominatim.openstreetmap.org/reverse";
-    const res = await axios.get(url, {
-      params: {
-        format: "jsonv2",
+  const url = "https://nominatim.openstreetmap.org/reverse";
+  const zoomLevels = [3, 5, 10];
+
+  for (const zoom of zoomLevels) {
+    try {
+      const res = await axios.get(url, {
+        params: {
+          format: "jsonv2",
+          lat,
+          lon,
+          zoom,
+          addressdetails: 1,
+          "accept-language": "en",
+        },
+        headers: { "User-Agent": "geoguess-api/1.0" },
+        timeout: 10000,
+      });
+
+      const countryInfo = extractCountryInfo(res.data);
+      if (countryInfo) {
+        return countryInfo;
+      }
+      console.log(
+        `Reverse geocode fallback needed (zoom ${zoom}) for`,
         lat,
         lon,
-        zoom: 3,
-        addressdetails: 1,
-        "accept-language": "en",
+      );
+    } catch (e) {
+      console.error("Reverse geocode error", `zoom ${zoom}`, e && e.message);
+    }
+  }
+
+  const fallbackInfo = await reverseGeocodeFallbackService(lat, lon);
+  if (fallbackInfo) {
+    return fallbackInfo;
+  }
+
+  console.warn("Reverse geocode failed to resolve country for", lat, lon);
+  return null;
+}
+
+async function reverseGeocodeFallbackService(lat, lon) {
+  try {
+    const res = await axios.get(
+      "https://api.bigdatacloud.net/data/reverse-geocode-client",
+      {
+        params: {
+          latitude: lat,
+          longitude: lon,
+          localityLanguage: "en",
+        },
+        headers: { "User-Agent": "geoguess-api/1.0" },
+        timeout: 10000,
       },
-      headers: { "User-Agent": "geoguess-api/1.0" },
-      timeout: 10000,
-    });
-    const addr = (res.data && res.data.address) || {};
-    if (!addr.country) {
-      console.log("Reverse geocode: no country for", lat, lon);
+    );
+
+    const data = res.data || {};
+    let countryName = (data.countryName || "").trim();
+    const countryCode = (data.countryCode || "").trim().toUpperCase();
+    if (!countryName && countryCode) {
+      const fallbackName = getCountryNameFromISO(countryCode);
+      if (fallbackName) {
+        countryName = fallbackName;
+      }
+    }
+
+    if (!countryName && !countryCode) {
       return null;
     }
-    return {
-      country: (addr.country || "").toLowerCase(),
-      countryCode: (addr.country_code || "").toLowerCase(),
-      displayName: addr.country,
+
+    const fallback = {
+      country: countryName ? countryName.toLowerCase() : null,
+      countryCode: countryCode || null,
+      displayName: countryName || countryCode,
     };
-  } catch (e) {
-    console.error("Reverse geocode error", e && e.message);
+
+    if (!fallback.displayName) {
+      return null;
+    }
+
+    if (!fallback.country) {
+      fallback.country = fallback.displayName.toLowerCase();
+    }
+
+    return fallback;
+  } catch (error) {
+    console.error("Fallback reverse geocode error", error && error.message);
     return null;
   }
 }
 
+async function fetchAndStoreImage(token) {
+  const img = await getRandomMapillaryImage(token);
+  if (!img || !img.url || !img.coord) {
+    return false;
+  }
+  const { lat, lon } = img.coord;
+  const countryInfo =
+    (await reverseGeocodeCountry(lat, lon)) || {
+      country: null,
+      countryCode: null,
+      displayName: "Unknown",
+    };
+
+  const countryKey = getCountryKey(countryInfo.countryCode, countryInfo.displayName);
+  if (!canStoreCountry(countryKey)) {
+    console.log(
+      `Skipping cache entry for ${countryInfo.displayName || "Unknown"}; already have ${MAX_IMAGES_PER_COUNTRY} images`,
+    );
+    return false;
+  }
+
+  imageCache.push({
+    imageUrl: img.url,
+    imageId: img.id,
+    coordinates: { lat, lon },
+    countryName: countryInfo.displayName,
+    countryCode: countryInfo.countryCode,
+    country: countryInfo.country,
+    countryKey,
+  });
+  return true;
+}
+
 async function fillCache(numImages) {
   const token = process.env.MAP_API_KEY;
-  if (!token) return;
-  console.log(`Filling cache with ${numImages} images...`);
-  for (let i = 0; i < numImages; i++) {
-    try {
-      const img = await getRandomMapillaryImage(token);
-      if (img && img.url && img.coord) {
-        const { lat, lon } = img.coord;
-        const countryInfo = await reverseGeocodeCountry(lat, lon) || { displayName: "Unknown" };
-        imageCache.push({
-          imageUrl: img.url,
-          coordinates: { lat, lon },
-          countryName: countryInfo.displayName,
-        });
-      }
-    } catch (e) {
-      console.error("Error filling cache:", e.message);
-    }
+  const target = Math.max(0, Math.floor(Number(numImages) || 0));
+  if (!token || target <= 0) {
+    return;
   }
-  console.log(`Cache filled with ${imageCache.length} images`);
+
+  console.log(`Filling cache with ${target} images (up to ${FILL_CACHE_CONCURRENCY} parallel requests)...`);
+
+  let cursor = 0;
+  let added = 0;
+  const workerCount = Math.min(FILL_CACHE_CONCURRENCY, target);
+  const maxAttempts = target * 5;
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      if (added >= target) {
+        break;
+      }
+      if (cursor >= maxAttempts) {
+        break;
+      }
+      cursor += 1;
+      try {
+        const success = await fetchAndStoreImage(token);
+        if (success) {
+          added += 1;
+        }
+      } catch (e) {
+        console.error("Error filling cache:", e && e.message);
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  console.log(`Cache fill complete. Added ${added} images. Cache size now ${imageCache.length}`);
+  if (added < target) {
+    console.warn(
+      `Cache fill stopped early: added ${added} of ${target} requested images (max attempts ${maxAttempts})`,
+    );
+  }
 }
 
 async function refillCache() {
-  if (imageCache.length < 5) { // Refill if less than 5
-    fillCache(5).catch(console.error);
+  if (imageCache.length < 5 && !backgroundFillPromise) {
+    backgroundFillPromise = fillCache(5)
+      .catch((error) => {
+        console.error("Background cache fill error:", error && error.message);
+      })
+      .finally(() => {
+        backgroundFillPromise = null;
+      });
   }
 }
 
