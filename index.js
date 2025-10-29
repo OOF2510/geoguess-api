@@ -160,36 +160,51 @@ app.get("/getImage", async (req, res) => {
       });
     }
 
-    let responseData;
-    if (imageCache.length > 0) {
-      responseData = imageCache.pop();
-      // Refill in background
-      refillCache();
-    } else {
-      // Fallback: fetch on demand
+    if (imageCache.length === 0) {
+      fillCache(15).catch((err) => {
+        console.error("Failed to trigger cache refill:", err && err.message);
+      });
+
       const img = await getRandomMapillaryImage(process.env.MAP_API_KEY);
       if (!img || !img.url || !img.coord) {
         return res.status(500).json({
           error: "Could not fetch a random image right now. Please try again.",
         });
       }
+
       const { lat, lon } = img.coord;
-      let countryInfo = await reverseGeocodeCountry(lat, lon);
-      if (!countryInfo) {
-        countryInfo = {
+      const countryInfo =
+        (await reverseGeocodeCountry(lat, lon)) || {
           country: null,
           countryCode: null,
           displayName: "Unknown",
         };
-      }
-      responseData = {
+
+      res.json({
         imageUrl: img.url,
         coordinates: { lat, lon },
-        countryName: countryInfo.displayName,
-      };
+        countryName: countryInfo.displayName || "Unknown",
+        countryCode: countryInfo.countryCode || null,
+      });
+      return;
     }
 
-    res.json(responseData);
+    // Refill in background
+    refillCache();
+
+    const cachedImage = imageCache.pop();
+    if (!cachedImage) {
+      return res.status(500).json({
+        error: "Could not fetch a random image right now. Please try again.",
+      });
+    }
+
+    res.json({
+      imageUrl: cachedImage.imageUrl,
+      coordinates: cachedImage.coordinates,
+      countryName: cachedImage.countryName || "Unknown",
+      countryCode: cachedImage.countryCode || null,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Internal server error" });
