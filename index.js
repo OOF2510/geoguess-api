@@ -81,7 +81,7 @@ function getFirebaseAppCheckInstance() {
   return firebaseAppCheckInstance;
 }
 
-const expectedAppCheckAppId = process.env.FIREBASE_APP_ID;
+const allowedAppIds = process.env.FIREBASE_APP_IDS?.split(',') ?? [];
 
 async function verifyFirebaseAppCheck(req, res, next) {
   const appCheck = getFirebaseAppCheckInstance();
@@ -99,9 +99,10 @@ async function verifyFirebaseAppCheck(req, res, next) {
   try {
     const decodedToken = await appCheck.verifyToken(token);
 
-    if (expectedAppCheckAppId && decodedToken.appId !== expectedAppCheckAppId) {
+    if (expectedAppCheckAppId && !allowedAppIds.includes(decodedToken.appId)) {
       return res.status(401).json({ error: "app_check_app_id_mismatch" });
     }
+    
 
     req.appCheckToken = decodedToken;
     next();
