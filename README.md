@@ -38,19 +38,20 @@ Guessing places should feel fast, global, and fair. The API makes that happen by
 
 ```mermaid
 flowchart TD
-    Start[Request /getImage] -->|Cache hit| Pop[Pop cached entry]
-    Pop --> RespondCached[Return cached image]
-    RespondCached --> Refill[Trigger background refill if cache < 5]
+    Start["Request /getImage"] -->|Cache hit| Pop["Pop cached entry"]
+    Pop --> RespondCached["Return cached image"]
+    RespondCached --> Refill["Trigger background refill if cache < 5"]
 
-    Start -->|Cache empty| Warmup[Fire fillCache(15) in background]
-    Start -->|Cache empty| LiveFetch[getRandomMapillaryImage]
-    LiveFetch --> LiveGeo[Reverse geocode (Nominatim -> BigDataCloud)]
-    LiveGeo --> RespondLive[Return live image]
+    Start -->|Cache empty| Warmup["Fire fillCache(15) in background"]
+    Start -->|Cache empty| LiveFetch["getRandomMapillaryImage"]
+    LiveFetch --> LiveGeo["Reverse geocode<br/>(Nominatim -> BigDataCloud)"]
+    LiveGeo --> RespondLive["Return live image"]
 
-    Refill --> WorkerPool[Parallel Mapillary fetches (max 4)]
-    WorkerPool --> CheckCountry[Skip if country already has 2 entries]
-    CheckCountry --> Enrich[Reverse geocode for cache entry]
-    Enrich --> CachePush[Push into cache]
+    Refill --> WorkerPool["Parallel Mapillary fetches<br/>(max 4)"]
+    WorkerPool --> CheckCountry["Skip if country<br/>already has 2 entries"]
+    CheckCountry --> Enrich["Reverse geocode<br/>for cache entry"]
+    Enrich --> CachePush["Push into cache"]
+
 ```
 
 - **fillCache(15)** tries up to `15 * 5` fetches so the country cap doesn’t freeze progress.
