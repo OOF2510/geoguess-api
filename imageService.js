@@ -77,9 +77,18 @@ function extractCountryInfo(data) {
       lowercase.includes("sea") ||
       lowercase.includes("bay") ||
       lowercase.includes("gulf");
-    if (maybeCountry && maybeCountry.length <= 60 && !isWaterBody) {
+    if (
+      maybeCountry &&
+      maybeCountry.length <= 60 &&
+      !isWaterBody &&
+      lowercase !== "unknown"
+    ) {
       country = maybeCountry;
     }
+  }
+
+  if (country && country.toLowerCase() === "unknown") {
+    country = "";
   }
 
   if (!country && countryCode) {
