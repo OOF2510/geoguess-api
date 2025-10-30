@@ -117,7 +117,8 @@ function getCountryKey(countryCode, countryName) {
 function canStoreCountry(countryKey) {
   let count = 0;
   for (const item of imageCache) {
-    const key = item.countryKey || getCountryKey(item.countryCode, item.countryName);
+    const key =
+      item.countryKey || getCountryKey(item.countryCode, item.countryName);
     if (key === countryKey) {
       count += 1;
       if (count >= MAX_IMAGES_PER_COUNTRY) {
@@ -441,15 +442,17 @@ async function axiosGetWithRetry(url, options, attempts) {
 async function enforceMapillaryRateLimit() {
   while (true) {
     const now = Date.now();
-    while (mapillaryCallTimes.length && now - mapillaryCallTimes[0] >= MAPILLARY_RATE_WINDOW_MS) {
+    while (
+      mapillaryCallTimes.length &&
+      now - mapillaryCallTimes[0] >= MAPILLARY_RATE_WINDOW_MS
+    ) {
       mapillaryCallTimes.shift();
     }
     if (mapillaryCallTimes.length < MAPILLARY_RATE_LIMIT) {
       mapillaryCallTimes.push(now);
       return;
     }
-    const waitMs =
-      MAPILLARY_RATE_WINDOW_MS - (now - mapillaryCallTimes[0]) + 5;
+    const waitMs = MAPILLARY_RATE_WINDOW_MS - (now - mapillaryCallTimes[0]) + 5;
     await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 200)));
   }
 }
@@ -834,6 +837,7 @@ async function reverseGeocodeCountry(lat, lon) {
   const url = "https://nominatim.openstreetmap.org/reverse";
   const zoomLevels = [3, 5, 10];
 
+  // Primary service: OpenStreetMap Nominatim with multiple zoom levels
   for (const zoom of zoomLevels) {
     try {
       const res = await axios.get(url, {
@@ -851,6 +855,9 @@ async function reverseGeocodeCountry(lat, lon) {
 
       const countryInfo = extractCountryInfo(res.data);
       if (countryInfo) {
+        console.log(
+          `Successfully geocoded (${lat}, ${lon}) using Nominatim zoom ${zoom}`,
+        );
         return countryInfo;
       }
       console.log(
@@ -863,12 +870,45 @@ async function reverseGeocodeCountry(lat, lon) {
     }
   }
 
+  // Fallback 1: BigDataCloud
+  console.log(`Trying BigDataCloud fallback for (${lat}, ${lon})`);
   const fallbackInfo = await reverseGeocodeFallbackService(lat, lon);
   if (fallbackInfo) {
+    console.log(`Successfully geocoded (${lat}, ${lon}) using BigDataCloud`);
     return fallbackInfo;
   }
 
-  console.warn("Reverse geocode failed to resolve country for", lat, lon);
+  // Fallback 2: Geocode.xyz
+  console.log(`Trying Geocode.xyz fallback for (${lat}, ${lon})`);
+  const geocodeXyzInfo = await reverseGeocodeXyzService(lat, lon);
+  if (geocodeXyzInfo) {
+    console.log(`Successfully geocoded (${lat}, ${lon}) using Geocode.xyz`);
+    return geocodeXyzInfo;
+  }
+
+  // Fallback 3: GeoNames
+  console.log(`Trying GeoNames fallback for (${lat}, ${lon})`);
+  const geoNamesInfo = await reverseGeocodeGeoNames(lat, lon);
+  if (geoNamesInfo) {
+    console.log(`Successfully geocoded (${lat}, ${lon}) using GeoNames`);
+    return geoNamesInfo;
+  }
+
+  // Fallback 4: Manual country lookup based on coordinates
+  console.log(`Trying coordinate-based country lookup for (${lat}, ${lon})`);
+  const coordBasedInfo = await getCountryFromCoordinates(lat, lon);
+  if (coordBasedInfo) {
+    console.log(
+      `Successfully geocoded (${lat}, ${lon}) using coordinate-based lookup`,
+    );
+    return coordBasedInfo;
+  }
+
+  console.warn(
+    "All reverse geocode attempts failed to resolve country for",
+    lat,
+    lon,
+  );
   return null;
 }
 
@@ -890,6 +930,7 @@ async function reverseGeocodeFallbackService(lat, lon) {
     const data = res.data || {};
     let countryName = (data.countryName || "").trim();
     const countryCode = (data.countryCode || "").trim().toUpperCase();
+
     if (!countryName && countryCode) {
       const fallbackName = getCountryNameFromISO(countryCode);
       if (fallbackName) {
@@ -898,6 +939,7 @@ async function reverseGeocodeFallbackService(lat, lon) {
     }
 
     if (!countryName && !countryCode) {
+      console.log("BigDataCloud returned no country data");
       return null;
     }
 
@@ -917,9 +959,350 @@ async function reverseGeocodeFallbackService(lat, lon) {
 
     return fallback;
   } catch (error) {
-    console.error("Fallback reverse geocode error", error && error.message);
+    console.error(
+      "BigDataCloud reverse geocode error:",
+      error && error.message,
+    );
     return null;
   }
+}
+
+// Fallback service 2: Geocode.xyz
+async function reverseGeocodeXyzService(lat, lon) {
+  try {
+    const res = await axios.get("https://geocode.xyz/" + lat + "," + lon, {
+      params: {
+        json: 1,
+        geoit: "json",
+      },
+      headers: { "User-Agent": "geoguess-api/1.0" },
+      timeout: 12000,
+    });
+
+    const data = res.data || {};
+    let countryName = (data.country || "").trim();
+    const countryCode = (data.prov || data.countrycode || "")
+      .trim()
+      .toUpperCase();
+
+    // Filter out error messages
+    if (countryName.includes("Throttled") || countryName.includes("error")) {
+      console.log("Geocode.xyz throttled or error response");
+      return null;
+    }
+
+    if (!countryName && countryCode) {
+      const fallbackName = getCountryNameFromISO(countryCode);
+      if (fallbackName) {
+        countryName = fallbackName;
+      }
+    }
+
+    if (!countryName && !countryCode) {
+      console.log("Geocode.xyz returned no country data");
+      return null;
+    }
+
+    const result = {
+      country: countryName ? countryName.toLowerCase() : null,
+      countryCode: countryCode || null,
+      displayName: countryName || countryCode,
+    };
+
+    if (!result.displayName) {
+      return null;
+    }
+
+    if (!result.country) {
+      result.country = result.displayName.toLowerCase();
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Geocode.xyz reverse geocode error:", error && error.message);
+    return null;
+  }
+}
+
+// Fallback service 3: GeoNames (using free API)
+async function reverseGeocodeGeoNames(lat, lon) {
+  try {
+    // Using the free geonames service - requires username but "demo" works for limited requests
+    const res = await axios.get("http://api.geonames.org/countryCodeJSON", {
+      params: {
+        lat: lat,
+        lng: lon,
+        username: "demo",
+        radius: 10,
+      },
+      headers: { "User-Agent": "geoguess-api/1.0" },
+      timeout: 10000,
+    });
+
+    const data = res.data || {};
+    const countryCode = (data.countryCode || "").trim().toUpperCase();
+    let countryName = (data.countryName || "").trim();
+
+    if (!countryName && countryCode) {
+      const fallbackName = getCountryNameFromISO(countryCode);
+      if (fallbackName) {
+        countryName = fallbackName;
+      }
+    }
+
+    if (!countryName && !countryCode) {
+      console.log("GeoNames returned no country data");
+      return null;
+    }
+
+    const result = {
+      country: countryName ? countryName.toLowerCase() : null,
+      countryCode: countryCode || null,
+      displayName: countryName || countryCode,
+    };
+
+    if (!result.displayName) {
+      return null;
+    }
+
+    if (!result.country) {
+      result.country = result.displayName.toLowerCase();
+    }
+
+    return result;
+  } catch (error) {
+    console.error("GeoNames reverse geocode error:", error && error.message);
+    return null;
+  }
+}
+
+// Fallback service 4: Coordinate-based country lookup using rough bounding boxes
+async function getCountryFromCoordinates(lat, lon) {
+  // Rough country bounding boxes for major countries
+  const countryBounds = [
+    {
+      name: "United States",
+      code: "US",
+      minLat: 24,
+      maxLat: 50,
+      minLon: -125,
+      maxLon: -66,
+    },
+    {
+      name: "Canada",
+      code: "CA",
+      minLat: 42,
+      maxLat: 84,
+      minLon: -141,
+      maxLon: -52,
+    },
+    {
+      name: "Mexico",
+      code: "MX",
+      minLat: 14,
+      maxLat: 33,
+      minLon: -118,
+      maxLon: -86,
+    },
+    {
+      name: "Brazil",
+      code: "BR",
+      minLat: -34,
+      maxLat: 6,
+      minLon: -74,
+      maxLon: -34,
+    },
+    {
+      name: "Argentina",
+      code: "AR",
+      minLat: -55,
+      maxLat: -21,
+      minLon: -73,
+      maxLon: -53,
+    },
+    {
+      name: "United Kingdom",
+      code: "GB",
+      minLat: 49.5,
+      maxLat: 61,
+      minLon: -8,
+      maxLon: 2,
+    },
+    {
+      name: "France",
+      code: "FR",
+      minLat: 41,
+      maxLat: 51,
+      minLon: -5,
+      maxLon: 10,
+    },
+    {
+      name: "Germany",
+      code: "DE",
+      minLat: 47,
+      maxLat: 55,
+      minLon: 5,
+      maxLon: 15,
+    },
+    {
+      name: "Spain",
+      code: "ES",
+      minLat: 36,
+      maxLat: 44,
+      minLon: -10,
+      maxLon: 4,
+    },
+    {
+      name: "Italy",
+      code: "IT",
+      minLat: 36,
+      maxLat: 47,
+      minLon: 6,
+      maxLon: 19,
+    },
+    {
+      name: "Poland",
+      code: "PL",
+      minLat: 49,
+      maxLat: 55,
+      minLon: 14,
+      maxLon: 24,
+    },
+    {
+      name: "Russia",
+      code: "RU",
+      minLat: 41,
+      maxLat: 82,
+      minLon: 19,
+      maxLon: 180,
+    },
+    {
+      name: "China",
+      code: "CN",
+      minLat: 18,
+      maxLat: 54,
+      minLon: 73,
+      maxLon: 135,
+    },
+    {
+      name: "Japan",
+      code: "JP",
+      minLat: 24,
+      maxLat: 46,
+      minLon: 123,
+      maxLon: 146,
+    },
+    {
+      name: "India",
+      code: "IN",
+      minLat: 6,
+      maxLat: 36,
+      minLon: 68,
+      maxLon: 97,
+    },
+    {
+      name: "Australia",
+      code: "AU",
+      minLat: -44,
+      maxLat: -10,
+      minLon: 113,
+      maxLon: 154,
+    },
+    {
+      name: "South Africa",
+      code: "ZA",
+      minLat: -35,
+      maxLat: -22,
+      minLon: 16,
+      maxLon: 33,
+    },
+    {
+      name: "Egypt",
+      code: "EG",
+      minLat: 22,
+      maxLat: 32,
+      minLon: 24,
+      maxLon: 37,
+    },
+    {
+      name: "Turkey",
+      code: "TR",
+      minLat: 36,
+      maxLat: 42,
+      minLon: 26,
+      maxLon: 45,
+    },
+    {
+      name: "Thailand",
+      code: "TH",
+      minLat: 5,
+      maxLat: 21,
+      minLon: 97,
+      maxLon: 106,
+    },
+    {
+      name: "Indonesia",
+      code: "ID",
+      minLat: -11,
+      maxLat: 6,
+      minLon: 95,
+      maxLon: 141,
+    },
+    {
+      name: "Sweden",
+      code: "SE",
+      minLat: 55,
+      maxLat: 69,
+      minLon: 11,
+      maxLon: 24,
+    },
+    {
+      name: "Norway",
+      code: "NO",
+      minLat: 58,
+      maxLat: 71,
+      minLon: 4,
+      maxLon: 31,
+    },
+    {
+      name: "Finland",
+      code: "FI",
+      minLat: 60,
+      maxLat: 70,
+      minLon: 20,
+      maxLon: 32,
+    },
+    {
+      name: "New Zealand",
+      code: "NZ",
+      minLat: -47,
+      maxLat: -34,
+      minLon: 166,
+      maxLon: 179,
+    },
+  ];
+
+  // Normalize longitude
+  const normalizedLon = normalizeLon(lon);
+
+  for (const country of countryBounds) {
+    if (
+      lat >= country.minLat &&
+      lat <= country.maxLat &&
+      normalizedLon >= country.minLon &&
+      normalizedLon <= country.maxLon
+    ) {
+      console.log(`Matched coordinates to ${country.name} using bounding box`);
+      return {
+        country: country.name.toLowerCase(),
+        countryCode: country.code,
+        displayName: country.name,
+      };
+    }
+  }
+
+  console.log("No country match found in coordinate-based lookup");
+  return null;
 }
 
 async function fetchAndStoreImage(token) {
@@ -928,14 +1311,16 @@ async function fetchAndStoreImage(token) {
     return false;
   }
   const { lat, lon } = img.coord;
-  const countryInfo =
-    (await reverseGeocodeCountry(lat, lon)) || {
-      country: null,
-      countryCode: null,
-      displayName: "Unknown",
-    };
+  const countryInfo = (await reverseGeocodeCountry(lat, lon)) || {
+    country: null,
+    countryCode: null,
+    displayName: "Unknown",
+  };
 
-  const countryKey = getCountryKey(countryInfo.countryCode, countryInfo.displayName);
+  const countryKey = getCountryKey(
+    countryInfo.countryCode,
+    countryInfo.displayName,
+  );
   if (!canStoreCountry(countryKey)) {
     console.log(
       `Skipping cache entry for ${countryInfo.displayName || "Unknown"}; already have ${MAX_IMAGES_PER_COUNTRY} images`,
@@ -962,7 +1347,9 @@ async function fillCache(numImages) {
     return;
   }
 
-  console.log(`Filling cache with ${target} images (up to ${FILL_CACHE_CONCURRENCY} parallel requests)...`);
+  console.log(
+    `Filling cache with ${target} images (up to ${FILL_CACHE_CONCURRENCY} parallel requests)...`,
+  );
 
   let cursor = 0;
   let added = 0;
@@ -990,7 +1377,9 @@ async function fillCache(numImages) {
   });
 
   await Promise.all(workers);
-  console.log(`Cache fill complete. Added ${added} images. Cache size now ${imageCache.length}`);
+  console.log(
+    `Cache fill complete. Added ${added} images. Cache size now ${imageCache.length}`,
+  );
   if (added < target) {
     console.warn(
       `Cache fill stopped early: added ${added} of ${target} requested images (max attempts ${maxAttempts})`,
