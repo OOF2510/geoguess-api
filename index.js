@@ -81,7 +81,9 @@ function getFirebaseAppCheckInstance() {
   return firebaseAppCheckInstance;
 }
 
-const allowedAppIds = process.env.FIREBASE_APP_IDS?.split(',') ?? [];
+const allowedAppIds = process.env.FIREBASE_APP_IDS
+  ? process.env.FIREBASE_APP_IDS.split(',').map((id) => id.trim()).filter(Boolean)
+  : [];
 
 async function verifyFirebaseAppCheck(req, res, next) {
   const appCheck = getFirebaseAppCheckInstance();
@@ -99,7 +101,7 @@ async function verifyFirebaseAppCheck(req, res, next) {
   try {
     const decodedToken = await appCheck.verifyToken(token);
 
-    if (expectedAppCheckAppId && !allowedAppIds.includes(decodedToken.appId)) {
+    if (allowedAppIds.length > 0 && !allowedAppIds.includes(decodedToken.appId)) {
       return res.status(401).json({ error: "app_check_app_id_mismatch" });
     }
     
@@ -348,3 +350,4 @@ app.get("/health", (req, res) => {
 
 // Vercel serverless function export
 module.exports = app;
+
