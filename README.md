@@ -1,6 +1,6 @@
 # 🌐 GeoGuess API
 
-The backend that powers my [GeoGuess App](https://github.com/oof2510/GeoguessApp), serving fresh Mapillary street-view shots, tagging them with country data, and keeping the global leaderboard flowing with minimal lag.
+The backend that powers my [GeoGuess App](https://github.com/oof2510/GeoguessApp), serving fresh Mapillary street-view shots, tagging them with country data, and keeping the global leaderboard flowing with minimal lag. Live at [api.geo.oof2510.space](https://api.geo.oof2510.space/health)
 
 ## 📚 Table of Contents
 
