@@ -886,7 +886,10 @@ app.get("/test-ai", async (req, res) => {
   try {
     const imagePayload = await getImagePayload();
     const aiGuess = await fetchAiGuess(imagePayload);
-    res.json(aiGuess);
+    res.json({
+      ...aiGuess,
+      imageUrl: imagePayload.url,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Internal server error" });
