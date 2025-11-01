@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const { MongoClient, ObjectId } = require("mongodb");
+const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -16,6 +17,18 @@ const {
 const app = express();
 const PORT = process.env.PORT || 8080;
 app.use(express.json());
+
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL || "qwen/qwen2.5-vl-32b-instruct:free";
+const OPENROUTER_BASE_URL =
+  process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+
+const AI_MATCH_ROUNDS = parseInt(process.env.AI_MATCH_ROUNDS, 10) || 5;
+const AI_MATCH_EXPIRY_MINUTES =
+  parseInt(process.env.AI_MATCH_EXPIRY_MINUTES, 10) || 60;
+
+const aiMatches = new Map();
 
 const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = process.env.DB_NAME || "geoguess-db";
@@ -82,7 +95,9 @@ function getFirebaseAppCheckInstance() {
 }
 
 const allowedAppIds = process.env.FIREBASE_APP_IDS
-  ? process.env.FIREBASE_APP_IDS.split(',').map((id) => id.trim()).filter(Boolean)
+  ? process.env.FIREBASE_APP_IDS.split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
   : [];
 
 async function verifyFirebaseAppCheck(req, res, next) {
@@ -101,10 +116,12 @@ async function verifyFirebaseAppCheck(req, res, next) {
   try {
     const decodedToken = await appCheck.verifyToken(token);
 
-    if (allowedAppIds.length > 0 && !allowedAppIds.includes(decodedToken.appId)) {
+    if (
+      allowedAppIds.length > 0 &&
+      !allowedAppIds.includes(decodedToken.appId)
+    ) {
       return res.status(401).json({ error: "app_check_app_id_mismatch" });
     }
-    
 
     req.appCheckToken = decodedToken;
     next();
@@ -154,60 +171,445 @@ async function initializeDatabase() {
   isInitialized = true;
 }
 
+async function getImagePayload() {
+  if (!process.env.MAP_API_KEY) {
+    throw new Error("Mapillary access token missing in environment variables.");
+  }
+
+  if (imageCache.length === 0) {
+    fillCache(15).catch((err) => {
+      console.error("Failed to trigger cache refill:", err && err.message);
+    });
+
+    const img = await getRandomMapillaryImage(process.env.MAP_API_KEY);
+    if (!img || !img.url || !img.coord) {
+      throw new Error(
+        "Could not fetch a random image right now. Please try again.",
+      );
+    }
+
+    const { lat, lon } = img.coord;
+    const countryInfo = (await reverseGeocodeCountry(lat, lon)) || {
+      country: null,
+      countryCode: null,
+      displayName: "Unknown",
+    };
+
+    return {
+      imageUrl: img.url,
+      coordinates: { lat, lon },
+      countryName: countryInfo.displayName || "Unknown",
+      countryCode: countryInfo.countryCode || null,
+    };
+  }
+
+  refillCache();
+
+  const cachedImage = imageCache.pop();
+  if (!cachedImage) {
+    throw new Error(
+      "Could not fetch a random image right now. Please try again.",
+    );
+  }
+
+  return {
+    imageUrl: cachedImage.imageUrl,
+    coordinates: cachedImage.coordinates,
+    countryName: cachedImage.countryName || "Unknown",
+    countryCode: cachedImage.countryCode || null,
+  };
+}
+
+function normalizeCountry(text) {
+  const normalized = (text || "").trim().toLowerCase();
+  return normalized
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countryAliases(country, code) {
+  const base = new Set();
+  const c = (country || "").toLowerCase();
+  const cc = (code || "").toLowerCase();
+
+  if (c) base.add(c);
+  if (cc) base.add(cc);
+
+  if (c.includes("united states")) {
+    base.add("usa");
+    base.add("us");
+    base.add("united states of america");
+    base.add("america");
+  }
+  if (c.includes("united kingdom")) {
+    base.add("uk");
+    base.add("great britain");
+    base.add("britain");
+    base.add("england");
+  }
+  if (c.includes("russia")) {
+    base.add("russian federation");
+  }
+  if (c.includes("south korea")) {
+    base.add("korea");
+    base.add("republic of korea");
+  }
+  if (c.includes("north korea")) {
+    base.add("dprk");
+    base.add("democratic peoples republic of korea");
+  }
+  if (c.includes("united arab emirates") || c === "uae") {
+    base.add("united arab emirates");
+    base.add("uae");
+  }
+  if (c.includes("czechia")) {
+    base.add("czech republic");
+  }
+  if (c.includes("eswatini")) {
+    base.add("swaziland");
+  }
+  if (c.includes("east timor")) {
+    base.add("timor leste");
+  }
+  if (
+    c.includes("ivory coast") ||
+    c.includes("côte d'ivoire") ||
+    c.includes("cote divoire")
+  ) {
+    base.add("cote divoire");
+    base.add("cote d'ivoire");
+    base.add("ivory coast");
+  }
+
+  return Array.from(base);
+}
+
+function matchGuess(guess, country, code) {
+  if (!guess) return false;
+  const normalizedGuess = normalizeCountry(guess);
+  if (!normalizedGuess) return false;
+  if (code) {
+    const normalizedCode = code.trim().toLowerCase();
+    if (normalizedGuess === normalizedCode) {
+      return true;
+    }
+  }
+  const normalizedCountry = country ? normalizeCountry(country) : null;
+  if (!normalizedCountry) return false;
+  const aliases = countryAliases(normalizedCountry, code || null);
+  return aliases.some((alias) => normalizedGuess === alias);
+}
+
+function summarizeHemisphere(lat, lon) {
+  const hemispheres = [];
+  hemispheres.push(lat >= 0 ? "Northern Hemisphere" : "Southern Hemisphere");
+  hemispheres.push(lon >= 0 ? "Eastern Hemisphere" : "Western Hemisphere");
+  return hemispheres.join(" & ");
+}
+
+function climateBand(lat) {
+  const absLat = Math.abs(lat);
+  if (absLat < 15) return "tropical";
+  if (absLat < 35) return "subtropical";
+  if (absLat < 55) return "temperate";
+  if (absLat < 66) return "cool temperate";
+  return "polar";
+}
+
+function fallbackAiGuess(round, reason) {
+  const { countryName, countryCode } = round;
+  const pool = [
+    "Brazil",
+    "United States",
+    "Canada",
+    "France",
+    "Germany",
+    "South Africa",
+    "Australia",
+    "Japan",
+    "India",
+    "Argentina",
+  ];
+
+  const candidates = [];
+  const seen = new Set();
+
+  if (countryName && !seen.has(countryName)) {
+    seen.add(countryName);
+    candidates.push({
+      countryName,
+      confidence: 0.85,
+      explanation:
+        "Correct country included to keep fallback behaviour plausible.",
+    });
+  }
+
+  while (candidates.length < 3) {
+    const guess = pool[Math.floor(Math.random() * pool.length)];
+    if (seen.has(guess)) {
+      continue;
+    }
+    seen.add(guess);
+    candidates.push({
+      countryName: guess,
+      confidence: 0.35,
+      explanation:
+        reason === "missing_api_key"
+          ? "Random fallback guess because no OpenRouter API key is configured."
+          : "Random fallback guess because the OpenRouter request failed.",
+    });
+  }
+
+  const decorated = candidates.map((candidate) => ({
+    countryName: candidate.countryName,
+    confidence: candidate.confidence,
+    explanation: candidate.explanation,
+    isCorrect: matchGuess(candidate.countryName, countryName, countryCode),
+  }));
+
+  const chosen = decorated[Math.floor(Math.random() * decorated.length)];
+
+  return {
+    countryName: chosen.countryName,
+    confidence: chosen.confidence,
+    explanation: chosen.explanation,
+    isCorrect: chosen.isCorrect,
+    candidates: decorated,
+    fallbackReason: reason,
+  };
+}
+
+async function fetchAiGuess(round) {
+  if (!OPENROUTER_API_KEY) {
+    return fallbackAiGuess(round, "missing_api_key");
+  }
+
+  const { coordinates, countryName, countryCode, imageUrl } = round;
+  const { lat, lon } = coordinates;
+  const hemisphereSummary = summarizeHemisphere(lat, lon);
+  const band = climateBand(lat);
+  const prompt = `You are playing a GeoGuessr-style geography duel. Study the attached Street View image and return three plausible country guesses ranked in order of confidence.\n\nFollow these rules strictly:\n1. Only respond with JSON shaped like {"guesses":[{...}]}.\n2. Provide exactly three guesses. Each guess requires countryName (string), confidence (number 0-1), and explanation (short sentence referencing visual or geographic cues).\n3. Base your reasoning primarily on the image. Use the metadata that follows as supporting context only.\n4. Never reveal that you know the correct country ahead of time, and never include any non-JSON commentary.`;
+
+  const metadata = `Supporting metadata:\n- Latitude: ${lat.toFixed(4)}\n- Longitude: ${lon.toFixed(4)}\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
+
+  try {
+    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://github.com/oof2510/geoguessapp",
+        "X-Title": "GeoFinder AI Duel",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageUrl } },
+              { type: "text", text: metadata },
+            ],
+          },
+        ],
+        temperature: 0.6,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(
+        "OpenRouter request failed",
+        response.status,
+        await response.text(),
+      );
+      return fallbackAiGuess(round, "bad_response");
+    }
+
+    const data = await response.json();
+    const choice = data && data.choices && data.choices[0];
+    if (!choice || !choice.message || !choice.message.content) {
+      return fallbackAiGuess(round, "empty_response");
+    }
+
+    const raw = choice.message.content.trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(raw.replace(/```json|```/g, ""));
+    } catch (err) {
+      console.error("Failed to parse AI response", raw, err);
+      return fallbackAiGuess(round, "parse_error");
+    }
+
+    const guesses = Array.isArray(parsed?.guesses) ? parsed.guesses : [];
+
+    const normalizedGuesses = guesses
+      .map((guess) => {
+        if (!guess || typeof guess.countryName !== "string") {
+          return null;
+        }
+
+        const trimmedName = guess.countryName.trim();
+        if (!trimmedName) {
+          return null;
+        }
+
+        const explanation =
+          typeof guess.explanation === "string" && guess.explanation.trim()
+            ? guess.explanation.trim()
+            : "Guess derived from OpenRouter model output.";
+
+        const confidence =
+          typeof guess.confidence === "number" && guess.confidence >= 0
+            ? Math.min(guess.confidence, 1)
+            : null;
+
+        return {
+          countryName: trimmedName,
+          confidence,
+          explanation,
+        };
+      })
+      .filter(Boolean);
+
+    if (!normalizedGuesses.length) {
+      return fallbackAiGuess(round, "invalid_payload");
+    }
+
+    const decorated = normalizedGuesses.map((guess) => ({
+      countryName: guess.countryName,
+      confidence:
+        typeof guess.confidence === "number"
+          ? guess.confidence
+          : matchGuess(guess.countryName, countryName, countryCode || null)
+            ? 0.8
+            : 0.45,
+      explanation: guess.explanation,
+      isCorrect: matchGuess(
+        guess.countryName,
+        countryName,
+        countryCode || null,
+      ),
+    }));
+
+    const chosen =
+      decorated[Math.floor(Math.random() * decorated.length)] || decorated[0];
+
+    return {
+      countryName: chosen.countryName,
+      confidence: chosen.confidence,
+      explanation: chosen.explanation,
+      isCorrect: chosen.isCorrect,
+      candidates: decorated,
+    };
+  } catch (error) {
+    console.error("OpenRouter call failed", error);
+    return fallbackAiGuess(round, "request_failure");
+  }
+}
+
+function pruneExpiredMatches(now = Date.now()) {
+  const cutoff = now - AI_MATCH_EXPIRY_MINUTES * 60 * 1000;
+  for (const [matchId, match] of aiMatches.entries()) {
+    if (match.createdAt < cutoff) {
+      aiMatches.delete(matchId);
+    }
+  }
+}
+
+async function createAiRound(roundIndex) {
+  const payload = await getImagePayload();
+  return {
+    index: roundIndex,
+    imageUrl: payload.imageUrl,
+    coordinates: payload.coordinates,
+    countryName: payload.countryName,
+    countryCode: payload.countryCode,
+    resolved: false,
+    aiGuess: null,
+    player: null,
+  };
+}
+
+async function createAiMatch() {
+  const rounds = [];
+  for (let i = 0; i < AI_MATCH_ROUNDS; i += 1) {
+    const round = await createAiRound(i);
+    rounds.push(round);
+  }
+
+  const matchId = crypto.randomUUID();
+  const match = {
+    id: matchId,
+    rounds,
+    totalRounds: rounds.length,
+    currentRound: 0,
+    playerScore: 0,
+    aiScore: 0,
+    status: "in-progress",
+    createdAt: Date.now(),
+    history: [],
+  };
+
+  aiMatches.set(matchId, match);
+  return match;
+}
+
+function getMatch(matchId) {
+  if (!matchId) return null;
+  return aiMatches.get(matchId) || null;
+}
+
+function serializeRoundForClient(round) {
+  if (!round) return null;
+  return {
+    roundIndex: round.index,
+    imageUrl: round.imageUrl,
+  };
+}
+
+function buildRoundSummary(round) {
+  return {
+    roundIndex: round.index,
+    correctCountry: {
+      name: round.countryName,
+      code: round.countryCode || null,
+    },
+    coordinates: round.coordinates,
+    player:
+      round.player && round.player.guess
+        ? {
+            guess: round.player.guess,
+            normalizedGuess: normalizeCountry(round.player.guess),
+            isCorrect: Boolean(round.player.isCorrect),
+          }
+        : null,
+    ai: round.aiGuess
+      ? {
+          countryName: round.aiGuess.countryName,
+          confidence: round.aiGuess.confidence,
+          explanation: round.aiGuess.explanation,
+          isCorrect: Boolean(round.aiGuess.isCorrect),
+          candidates: Array.isArray(round.aiGuess.candidates)
+            ? round.aiGuess.candidates
+            : null,
+          fallbackReason: round.aiGuess.fallbackReason || null,
+        }
+      : null,
+  };
+}
+
 // Public endpoint: Get random image
 app.get("/getImage", async (req, res) => {
   try {
-    if (!process.env.MAP_API_KEY) {
-      return res.status(500).json({
-        error: "Mapillary access token missing in environment variables.",
-      });
-    }
-
-    if (imageCache.length === 0) {
-      fillCache(15).catch((err) => {
-        console.error("Failed to trigger cache refill:", err && err.message);
-      });
-
-      const img = await getRandomMapillaryImage(process.env.MAP_API_KEY);
-      if (!img || !img.url || !img.coord) {
-        return res.status(500).json({
-          error: "Could not fetch a random image right now. Please try again.",
-        });
-      }
-
-      const { lat, lon } = img.coord;
-      const countryInfo =
-        (await reverseGeocodeCountry(lat, lon)) || {
-          country: null,
-          countryCode: null,
-          displayName: "Unknown",
-        };
-
-      res.json({
-        imageUrl: img.url,
-        coordinates: { lat, lon },
-        countryName: countryInfo.displayName || "Unknown",
-        countryCode: countryInfo.countryCode || null,
-      });
-      return;
-    }
-
-    // Refill in background
-    refillCache();
-
-    const cachedImage = imageCache.pop();
-    if (!cachedImage) {
-      return res.status(500).json({
-        error: "Could not fetch a random image right now. Please try again.",
-      });
-    }
-
-    res.json({
-      imageUrl: cachedImage.imageUrl,
-      coordinates: cachedImage.coordinates,
-      countryName: cachedImage.countryName || "Unknown",
-      countryCode: cachedImage.countryCode || null,
-    });
+    const payload = await getImagePayload();
+    res.json(payload);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Internal server error" });
@@ -305,6 +707,131 @@ app.post("/game/submit", verifyFirebaseAppCheck, async (req, res) => {
   }
 });
 
+app.post("/ai-duel/start", verifyFirebaseAppCheck, async (req, res) => {
+  try {
+    pruneExpiredMatches();
+    const match = await createAiMatch();
+    const firstRound = serializeRoundForClient(match.rounds[0]);
+    res.json({
+      matchId: match.id,
+      totalRounds: match.totalRounds,
+      round: firstRound,
+      scores: { player: match.playerScore, ai: match.aiScore },
+      status: match.status,
+    });
+  } catch (error) {
+    console.error("Failed to start AI duel", error);
+    res.status(500).json({ error: "ai_duel_start_failed" });
+  }
+});
+
+app.post("/ai-duel/guess", verifyFirebaseAppCheck, async (req, res) => {
+  try {
+    const { matchId, roundIndex, guess } = req.body || {};
+
+    if (!matchId || typeof roundIndex !== "number" || roundIndex < 0) {
+      return res.status(400).json({ error: "invalid_request" });
+    }
+
+    pruneExpiredMatches();
+    const match = getMatch(matchId);
+    if (!match) {
+      return res.status(404).json({ error: "match_not_found" });
+    }
+
+    if (match.status === "completed") {
+      return res.status(409).json({
+        error: "match_completed",
+        scores: { player: match.playerScore, ai: match.aiScore },
+        history: match.history,
+      });
+    }
+
+    if (roundIndex !== match.currentRound) {
+      const currentRound = serializeRoundForClient(
+        match.rounds[match.currentRound],
+      );
+      return res.status(409).json({
+        error: "round_out_of_sync",
+        expectedRound: currentRound,
+      });
+    }
+
+    const round = match.rounds[roundIndex];
+    if (!round) {
+      return res.status(400).json({ error: "round_not_found" });
+    }
+
+    if (!round.resolved) {
+      const playerGuess = typeof guess === "string" ? guess : "";
+      const playerIsCorrect = matchGuess(
+        playerGuess,
+        round.countryName,
+        round.countryCode || null,
+      );
+
+      round.player = {
+        guess: playerGuess,
+        isCorrect: playerIsCorrect,
+      };
+
+      if (playerIsCorrect) {
+        match.playerScore += 1;
+      }
+
+      if (!round.aiGuess) {
+        round.aiGuess = await fetchAiGuess(round);
+        if (round.aiGuess && round.aiGuess.isCorrect) {
+          match.aiScore += 1;
+        }
+      }
+
+      const summary = buildRoundSummary(round);
+      match.history.push(summary);
+      round.resolved = true;
+
+      if (round.index + 1 >= match.totalRounds) {
+        match.status = "completed";
+      } else {
+        match.currentRound = round.index + 1;
+      }
+    }
+
+    const payload = {
+      matchId: match.id,
+      roundIndex: round.index,
+      totalRounds: match.totalRounds,
+      playerResult: round.player
+        ? {
+            guess: round.player.guess,
+            normalizedGuess: normalizeCountry(round.player.guess),
+            isCorrect: Boolean(round.player.isCorrect),
+          }
+        : null,
+      aiResult: round.aiGuess,
+      correctCountry: {
+        name: round.countryName,
+        code: round.countryCode || null,
+      },
+      coordinates: round.coordinates,
+      scores: { player: match.playerScore, ai: match.aiScore },
+      status: match.status,
+      history: match.history,
+    };
+
+    if (match.status !== "completed") {
+      payload.nextRound = serializeRoundForClient(
+        match.rounds[match.currentRound],
+      );
+    }
+
+    res.json(payload);
+  } catch (error) {
+    console.error("Failed to process AI duel guess", error);
+    res.status(500).json({ error: "ai_duel_guess_failed" });
+  }
+});
+
 // Leaderboard: Get top scores (public)
 app.get("/leaderboard/top", async (req, res) => {
   try {
@@ -319,7 +846,7 @@ app.get("/leaderboard/top", async (req, res) => {
       .limit(finalLimit)
       .toArray();
 
-    // Return sanitized data (no session IDs exposed)
+    // Return sanitized data
     const leaderboard = topScores.map((s, index) => ({
       rank: index + 1,
       score: s.score,
@@ -338,6 +865,21 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+app.get("/test-ai", async (req, res) => {
+  const key = req.query.key;
+  if (key !== process.env.AI_TESTING_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const imagePayload = await getImagePayload();
+    const aiGuess = await fetchAiGuess(imagePayload);
+    res.json(aiGuess);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Pre-fill cache on module load (works in serverless)
 (async () => {
   try {
@@ -350,4 +892,3 @@ app.get("/health", (req, res) => {
 
 // Vercel serverless function export
 module.exports = app;
-
