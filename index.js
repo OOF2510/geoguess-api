@@ -498,8 +498,21 @@ async function fetchAiGuess(round) {
       ),
     }));
 
-    const chosen =
-      decorated[Math.floor(Math.random() * decorated.length)] || decorated[0];
+    let totalWeight = decorated.reduce(
+      (sum, guess) => sum + guess.confidence,
+      0,
+    );
+    let r = Math.random() * totalWeight;
+    let cumulative = 0;
+    let chosen = null;
+    for (let guess of decorated) {
+      cumulative += guess.confidence;
+      if (r < cumulative) {
+        chosen = guess;
+        break;
+      }
+    }
+    chosen = chosen || decorated[0];
 
     return {
       countryName: chosen.countryName,
