@@ -20,7 +20,7 @@ app.use(express.json());
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL || "qwen/qwen2.5-vl-32b-instruct:free";
+  process.env.OPENROUTER_MODEL || "nvidia/nemotron-nano-12b-v2-vl:free";
 const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 
@@ -888,7 +888,7 @@ app.get("/test-ai", async (req, res) => {
     const aiGuess = await fetchAiGuess(imagePayload);
     res.json({
       ...aiGuess,
-      imageUrl: imagePayload.url,
+      imageUrl: imagePayload.imageUrl,
     });
   } catch (e) {
     console.error(e);
