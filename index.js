@@ -391,7 +391,7 @@ async function fetchAiGuess(round) {
   const band = climateBand(lat);
   const prompt = `You are playing a GeoGuessr-style geography duel. Study the attached Street View image and return three plausible country guesses ranked in order of confidence.\n\nFollow these rules strictly:\n1. Only respond with JSON shaped like {"guesses":[{...}]}.\n2. Provide exactly three guesses. Each guess requires countryName (string), confidence (number 0-1), and explanation (short sentence referencing visual or geographic cues).\n3. Base your reasoning primarily on the image. Use the metadata that follows as supporting context only.\n4. Never reveal that you know the correct country ahead of time, and never include any non-JSON commentary.`;
 
-  const metadata = `Supporting metadata:\n- Latitude: ${lat.toFixed(4)}\n- Longitude: ${lon.toFixed(4)}\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
+  const metadata = `Supporting metadata:\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
 
   try {
     const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
