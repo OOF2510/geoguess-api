@@ -18,15 +18,12 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 app.use(express.json());
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
-const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL || "nvidia/nemotron-nano-12b-v2-vl:free";
-const OPENROUTER_BASE_URL =
-  process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
-
 const AI_MATCH_ROUNDS = parseInt(process.env.AI_MATCH_ROUNDS, 10) || 5;
 const AI_MATCH_EXPIRY_MINUTES =
   parseInt(process.env.AI_MATCH_EXPIRY_MINUTES, 10) || 60;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const OPENROUTER_BASE_URL =
+  process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 
 const aiMatches = new Map();
 
@@ -380,6 +377,9 @@ function fallbackAiGuess(round, reason) {
   };
 }
 
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL || "mistralai/mistral-small-3.2-24b-instruct:free";
+
 async function fetchAiGuess(round) {
   if (!OPENROUTER_API_KEY) {
     return fallbackAiGuess(round, "missing_api_key");
@@ -419,7 +419,9 @@ async function fetchAiGuess(round) {
             ],
           },
         ],
-        temperature: 0.55,
+        temperature: 0.15,
+        max_output_tokens: 350,
+        top_p: 0.7,
       }),
     });
 
