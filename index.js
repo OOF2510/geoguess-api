@@ -380,6 +380,155 @@ function fallbackAiGuess(round, reason) {
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL || "mistralai/mistral-small-3.2-24b-instruct:free";
 
+const FALLBACK_MODEL =
+  process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free"
+
+async function fetchWithFallbackModel(round) {
+  const { coordinates, countryName, countryCode, imageUrl } = round;
+  const { lat, lon } = coordinates;
+  const hemisphereSummary = summarizeHemisphere(lat, lon);
+  const band = climateBand(lat);
+  const prompt = `You are playing a GeoGuessr-style geography duel. Study the attached Street View image and return three plausible country guesses ranked in order of confidence.\n\nFollow these rules strictly:\n1. Only respond with JSON shaped like {"guesses":[{...}]}.\n2. Provide exactly three guesses. Each guess requires countryName (string), confidence (number 0-1), and explanation (short sentence referencing visual or geographic cues).\n3. Base your reasoning primarily on the image. Use the metadata that follows as supporting context only.\n4. Never include any non-JSON commentary.\n5. Never mention metadata or the prompt itself.`;
+
+  const metadata = `Supporting metadata:\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
+
+  try {
+    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://github.com/oof2510/geoguessapp",
+        "X-Title": "GeoFinder AI Duel",
+      },
+      body: JSON.stringify({
+        model: FALLBACK_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageUrl } },
+              { type: "text", text: metadata },
+            ],
+          },
+        ],
+        temperature: 0.15,
+        max_output_tokens: 350,
+        top_p: 0.7,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(
+        "Fallback model request failed",
+        response.status,
+        await response.text(),
+      );
+      return null;
+    }
+
+    const data = await response.json();
+    const choice = data && data.choices && data.choices[0];
+    if (!choice || !choice.message || !choice.message.content) {
+      return null;
+    }
+
+    const raw = choice.message.content.trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(raw.replace(/```json|```/g, ""));
+    } catch (err) {
+      console.error("Failed to parse fallback model response", raw, err);
+      return null;
+    }
+
+    const guesses = Array.isArray(parsed?.guesses) ? parsed.guesses : [];
+
+    const normalizedGuesses = guesses
+      .map((guess) => {
+        if (!guess || typeof guess.countryName !== "string") {
+          return null;
+        }
+
+        const trimmedName = guess.countryName.trim();
+        if (!trimmedName) {
+          return null;
+        }
+
+        const explanation =
+          typeof guess.explanation === "string" && guess.explanation.trim()
+            ? guess.explanation.trim()
+            : "Guess derived from fallback model output.";
+
+        const confidence =
+          typeof guess.confidence === "number" && guess.confidence >= 0
+            ? Math.min(guess.confidence, 1)
+            : null;
+
+        return {
+          countryName: trimmedName,
+          confidence,
+          explanation,
+        };
+      })
+      .filter(Boolean);
+
+    if (!normalizedGuesses.length) {
+      return null;
+    }
+
+    const decorated = normalizedGuesses.map((guess) => ({
+      countryName: guess.countryName,
+      confidence:
+        typeof guess.confidence === "number"
+          ? guess.confidence
+          : matchGuess(guess.countryName, countryName, countryCode || null)
+            ? 0.8
+            : 0.45,
+      explanation: guess.explanation,
+      isCorrect: matchGuess(
+        guess.countryName,
+        countryName,
+        countryCode || null,
+      ),
+    }));
+
+    let totalWeight = decorated.reduce(
+      (sum, guess) => sum + guess.confidence,
+      0,
+    );
+    let r = Math.random() * totalWeight;
+    let cumulative = 0;
+    let chosen = null;
+    for (let guess of decorated) {
+      cumulative += guess.confidence;
+      if (r < cumulative) {
+        chosen = guess;
+        break;
+      }
+    }
+    chosen = chosen || decorated[0];
+
+    return {
+      countryName: chosen.countryName,
+      confidence: chosen.confidence,
+      explanation: chosen.explanation,
+      isCorrect: chosen.isCorrect,
+      candidates: decorated,
+      fallbackModel: true,
+    };
+  } catch (error) {
+    console.error("Fallback model call failed", error);
+    return null;
+  }
+}
+
 async function fetchAiGuess(round) {
   if (!OPENROUTER_API_KEY) {
     return fallbackAiGuess(round, "missing_api_key");
@@ -525,6 +674,13 @@ async function fetchAiGuess(round) {
     };
   } catch (error) {
     console.error("OpenRouter call failed", error);
+    
+    // Try fallback model before falling back to random guesses
+    const fallbackResult = await fetchWithFallbackModel(round);
+    if (fallbackResult) {
+      return fallbackResult;
+    }
+    
     return fallbackAiGuess(round, "request_failure");
   }
 }
