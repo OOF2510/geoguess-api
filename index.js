@@ -378,7 +378,7 @@ function fallbackAiGuess(round, reason) {
 }
 
 const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL || "google/gemma-3n-e4b-it:free";
+  process.env.OPENROUTER_MODEL || "google/gemma-3-27b-it:free";
 
 async function fetchAiGuess(round) {
   if (!OPENROUTER_API_KEY) {
