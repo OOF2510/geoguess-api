@@ -378,7 +378,7 @@ function fallbackAiGuess(round, reason) {
 }
 
 const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free";
+  process.env.OPENROUTER_MODEL || "mistralai/mistral-small-3.2-24b-instruct:free";
 
 async function fetchAiGuess(round) {
   if (!OPENROUTER_API_KEY) {
