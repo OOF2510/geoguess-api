@@ -197,6 +197,7 @@ async function getImagePayload() {
       coordinates: { lat, lon },
       countryName: countryInfo.displayName || "Unknown",
       countryCode: countryInfo.countryCode || null,
+      contributor: img.contributor || null,
     };
   }
 
@@ -214,6 +215,7 @@ async function getImagePayload() {
     coordinates: cachedImage.coordinates,
     countryName: cachedImage.countryName || "Unknown",
     countryCode: cachedImage.countryCode || null,
+    contributor: cachedImage.contributor || null,
   };
 }
 
@@ -378,10 +380,11 @@ function fallbackAiGuess(round, reason) {
 }
 
 const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL || "mistralai/mistral-small-3.2-24b-instruct:free";
+  process.env.OPENROUTER_MODEL ||
+  "mistralai/mistral-small-3.2-24b-instruct:free";
 
 const FALLBACK_MODEL =
-  process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free"
+  process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free";
 
 async function fetchWithFallbackModel(round) {
   const { coordinates, countryName, countryCode, imageUrl } = round;
@@ -674,13 +677,13 @@ async function fetchAiGuess(round) {
     };
   } catch (error) {
     console.error("OpenRouter call failed", error);
-    
+
     // Try fallback model before falling back to random guesses
     const fallbackResult = await fetchWithFallbackModel(round);
     if (fallbackResult) {
       return fallbackResult;
     }
-    
+
     return fallbackAiGuess(round, "request_failure");
   }
 }

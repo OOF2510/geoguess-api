@@ -45,9 +45,7 @@ function getCountryNameFromISO(code) {
       if (name && name !== normalized) {
         return name;
       }
-    } catch (err) {
-      // Fallback map handles codes not recognized by Intl.DisplayNames.
-    }
+    } catch (err) {}
   }
   return COUNTRY_NAME_FALLBACKS[normalized] || null;
 }
@@ -159,7 +157,7 @@ async function getRandomMapillaryImage(token) {
     params.set("access_token", token);
     params.set(
       "fields",
-      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
     );
     params.set(
       "bbox",
@@ -199,7 +197,7 @@ async function getRandomMapillaryImage(token) {
     params.set("access_token", token);
     params.set(
       "fields",
-      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
     );
     params.set(
       "bbox",
@@ -245,7 +243,7 @@ async function getRandomMapillaryImage(token) {
     params.set("access_token", token);
     params.set(
       "fields",
-      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
     );
     params.set(
       "bbox",
@@ -286,7 +284,7 @@ async function getRandomMapillaryImage(token) {
     params.set("access_token", token);
     params.set(
       "fields",
-      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
     );
     params.set(
       "bbox",
@@ -332,7 +330,7 @@ async function getRandomMapillaryImage(token) {
     params.set("access_token", token);
     params.set(
       "fields",
-      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+      "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
     );
     params.set(
       "bbox",
@@ -376,7 +374,7 @@ async function getImageDetails(id, token) {
   const params = new URLSearchParams();
   params.set(
     "fields",
-    "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url",
+    "id,computed_geometry,thumb_1024_url,thumb_2048_url,thumb_256_url,thumb_original_url,creator",
   );
   const url = `https://graph.mapillary.com/${id}?${params.toString()}`;
   const res = await mapillaryGet(url, token, 25000);
@@ -389,7 +387,12 @@ async function getImageDetails(id, token) {
   if (!imgUrl || !d.computed_geometry || !d.computed_geometry.coordinates)
     return null;
   const [lon, lat] = d.computed_geometry.coordinates;
-  return { url: imgUrl, coord: { lat, lon }, id: d.id };
+  return {
+    url: imgUrl,
+    coord: { lat, lon },
+    id: d.id,
+    contributor: d.creator?.username,
+  };
 }
 
 function imageItemToResult(item) {
@@ -402,7 +405,12 @@ function imageItemToResult(item) {
   const cg = item.computed_geometry;
   if (!imgUrl || !cg || !cg.coordinates) return null;
   const [lon, lat] = cg.coordinates;
-  return { url: imgUrl, coord: { lat, lon }, id: item.id };
+  return {
+    url: imgUrl,
+    coord: { lat, lon },
+    id: item.id,
+    contributor: item.creator?.username,
+  };
 }
 
 async function mapillaryGet(url, token, timeoutMs) {
@@ -1331,6 +1339,7 @@ async function fetchAndStoreImage(token) {
   imageCache.push({
     imageUrl: img.url,
     imageId: img.id,
+    contributor: img.contributor || null,
     coordinates: { lat, lon },
     countryName: countryInfo.displayName,
     countryCode: countryInfo.countryCode,
