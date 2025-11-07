@@ -386,7 +386,11 @@ const OPENROUTER_MODEL =
 const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free";
 
-async function fetchWithFallbackModel(round) {
+async function requestOpenRouterGuess(
+  round,
+  modelName,
+  { isFallbackModel = false } = {},
+) {
   const { coordinates, countryName, countryCode, imageUrl } = round;
   const { lat, lon } = coordinates;
   const hemisphereSummary = summarizeHemisphere(lat, lon);
@@ -405,7 +409,7 @@ async function fetchWithFallbackModel(round) {
         "X-Title": "GeoFinder AI Duel",
       },
       body: JSON.stringify({
-        model: FALLBACK_MODEL,
+        model: modelName,
         messages: [
           {
             role: "system",
@@ -429,17 +433,17 @@ async function fetchWithFallbackModel(round) {
 
     if (!response.ok) {
       console.error(
-        "Fallback model request failed",
+        `${isFallbackModel ? "Fallback" : "Primary"} model request failed`,
         response.status,
         await response.text(),
       );
-      return null;
+      return { success: false, reason: "bad_response" };
     }
 
     const data = await response.json();
     const choice = data && data.choices && data.choices[0];
     if (!choice || !choice.message || !choice.message.content) {
-      return null;
+      return { success: false, reason: "empty_response" };
     }
 
     const raw = choice.message.content.trim();
@@ -447,8 +451,14 @@ async function fetchWithFallbackModel(round) {
     try {
       parsed = JSON.parse(raw.replace(/```json|```/g, ""));
     } catch (err) {
-      console.error("Failed to parse fallback model response", raw, err);
-      return null;
+      console.error(
+        `Failed to parse ${
+          isFallbackModel ? "fallback" : "primary"
+        } model response`,
+        raw,
+        err,
+      );
+      return { success: false, reason: "parse_error" };
     }
 
     const guesses = Array.isArray(parsed?.guesses) ? parsed.guesses : [];
@@ -467,7 +477,9 @@ async function fetchWithFallbackModel(round) {
         const explanation =
           typeof guess.explanation === "string" && guess.explanation.trim()
             ? guess.explanation.trim()
-            : "Guess derived from fallback model output.";
+            : isFallbackModel
+              ? "Guess derived from fallback model output."
+              : "Guess derived from OpenRouter model output.";
 
         const confidence =
           typeof guess.confidence === "number" && guess.confidence >= 0
@@ -483,7 +495,7 @@ async function fetchWithFallbackModel(round) {
       .filter(Boolean);
 
     if (!normalizedGuesses.length) {
-      return null;
+      return { success: false, reason: "invalid_payload" };
     }
 
     const decorated = normalizedGuesses.map((guess) => ({
@@ -519,16 +531,22 @@ async function fetchWithFallbackModel(round) {
     chosen = chosen || decorated[0];
 
     return {
-      countryName: chosen.countryName,
-      confidence: chosen.confidence,
-      explanation: chosen.explanation,
-      isCorrect: chosen.isCorrect,
-      candidates: decorated,
-      fallbackModel: true,
+      success: true,
+      data: {
+        countryName: chosen.countryName,
+        confidence: chosen.confidence,
+        explanation: chosen.explanation,
+        isCorrect: chosen.isCorrect,
+        candidates: decorated,
+        ...(isFallbackModel ? { fallbackModel: true } : {}),
+      },
     };
   } catch (error) {
-    console.error("Fallback model call failed", error);
-    return null;
+    console.error(
+      `${isFallbackModel ? "Fallback" : "Primary"} model call failed`,
+      error,
+    );
+    return { success: false, reason: "request_failure" };
   }
 }
 
@@ -537,155 +555,21 @@ async function fetchAiGuess(round) {
     return fallbackAiGuess(round, "missing_api_key");
   }
 
-  const { coordinates, countryName, countryCode, imageUrl } = round;
-  const { lat, lon } = coordinates;
-  const hemisphereSummary = summarizeHemisphere(lat, lon);
-  const band = climateBand(lat);
-  const prompt = `You are playing a GeoGuessr-style geography duel. Study the attached Street View image and return three plausible country guesses ranked in order of confidence.\n\nFollow these rules strictly:\n1. Only respond with JSON shaped like {"guesses":[{...}]}.\n2. Provide exactly three guesses. Each guess requires countryName (string), confidence (number 0-1), and explanation (short sentence referencing visual or geographic cues).\n3. Base your reasoning primarily on the image. Use the metadata that follows as supporting context only.\n4. Never include any non-JSON commentary.\n5. Never mention metadata or the prompt itself.`;
-
-  const metadata = `Supporting metadata:\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
-
-  try {
-    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://github.com/oof2510/geoguessapp",
-        "X-Title": "GeoFinder AI Duel",
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: imageUrl } },
-              { type: "text", text: metadata },
-            ],
-          },
-        ],
-        temperature: 0.15,
-        max_output_tokens: 350,
-        top_p: 0.7,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error(
-        "OpenRouter request failed",
-        response.status,
-        await response.text(),
-      );
-      return fallbackAiGuess(round, "bad_response");
-    }
-
-    const data = await response.json();
-    const choice = data && data.choices && data.choices[0];
-    if (!choice || !choice.message || !choice.message.content) {
-      return fallbackAiGuess(round, "empty_response");
-    }
-
-    const raw = choice.message.content.trim();
-    let parsed;
-    try {
-      parsed = JSON.parse(raw.replace(/```json|```/g, ""));
-    } catch (err) {
-      console.error("Failed to parse AI response", raw, err);
-      return fallbackAiGuess(round, "parse_error");
-    }
-
-    const guesses = Array.isArray(parsed?.guesses) ? parsed.guesses : [];
-
-    const normalizedGuesses = guesses
-      .map((guess) => {
-        if (!guess || typeof guess.countryName !== "string") {
-          return null;
-        }
-
-        const trimmedName = guess.countryName.trim();
-        if (!trimmedName) {
-          return null;
-        }
-
-        const explanation =
-          typeof guess.explanation === "string" && guess.explanation.trim()
-            ? guess.explanation.trim()
-            : "Guess derived from OpenRouter model output.";
-
-        const confidence =
-          typeof guess.confidence === "number" && guess.confidence >= 0
-            ? Math.min(guess.confidence, 1)
-            : null;
-
-        return {
-          countryName: trimmedName,
-          confidence,
-          explanation,
-        };
-      })
-      .filter(Boolean);
-
-    if (!normalizedGuesses.length) {
-      return fallbackAiGuess(round, "invalid_payload");
-    }
-
-    const decorated = normalizedGuesses.map((guess) => ({
-      countryName: guess.countryName,
-      confidence:
-        typeof guess.confidence === "number"
-          ? guess.confidence
-          : matchGuess(guess.countryName, countryName, countryCode || null)
-            ? 0.8
-            : 0.45,
-      explanation: guess.explanation,
-      isCorrect: matchGuess(
-        guess.countryName,
-        countryName,
-        countryCode || null,
-      ),
-    }));
-
-    let totalWeight = decorated.reduce(
-      (sum, guess) => sum + guess.confidence,
-      0,
-    );
-    let r = Math.random() * totalWeight;
-    let cumulative = 0;
-    let chosen = null;
-    for (let guess of decorated) {
-      cumulative += guess.confidence;
-      if (r < cumulative) {
-        chosen = guess;
-        break;
-      }
-    }
-    chosen = chosen || decorated[0];
-
-    return {
-      countryName: chosen.countryName,
-      confidence: chosen.confidence,
-      explanation: chosen.explanation,
-      isCorrect: chosen.isCorrect,
-      candidates: decorated,
-    };
-  } catch (error) {
-    console.error("OpenRouter call failed", error);
-
-    // Try fallback model before falling back to random guesses
-    const fallbackResult = await fetchWithFallbackModel(round);
-    if (fallbackResult) {
-      return fallbackResult;
-    }
-
-    return fallbackAiGuess(round, "request_failure");
+  const primaryResult = await requestOpenRouterGuess(round, OPENROUTER_MODEL);
+  if (primaryResult.success) {
+    return primaryResult.data;
   }
+
+  const fallbackResult = await requestOpenRouterGuess(round, FALLBACK_MODEL, {
+    isFallbackModel: true,
+  });
+  if (fallbackResult.success) {
+    return fallbackResult.data;
+  }
+
+  const fallbackReason =
+    primaryResult.reason || fallbackResult.reason || "request_failure";
+  return fallbackAiGuess(round, fallbackReason);
 }
 
 function pruneExpiredMatches(now = Date.now()) {
