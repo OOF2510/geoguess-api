@@ -386,6 +386,9 @@ const OPENROUTER_MODEL =
 const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free";
 
+const TERTIARY_MODEL =
+  process.env.TERTIARY_MODEL || "openrouter/polaris-alpha";
+
 async function requestOpenRouterGuess(
   round,
   modelName,
@@ -567,9 +570,14 @@ async function fetchAiGuess(round) {
     return fallbackResult.data;
   }
 
-  const fallbackReason =
-    primaryResult.reason || fallbackResult.reason || "request_failure";
-  return fallbackAiGuess(round, fallbackReason);
+  const tertiaryResult = await requestOpenRouterGuess(round, TERTIARY_MODEL, {
+    isFallbackModel: true,
+  });
+  if (tertiaryResult.success) {
+    return tertiaryResult.data;
+  }
+
+  return fallbackAiGuess(round, "primary_and_fallback_failed");
 }
 
 function pruneExpiredMatches(now = Date.now()) {
