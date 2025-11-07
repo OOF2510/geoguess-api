@@ -376,6 +376,7 @@ function fallbackAiGuess(round, reason) {
     isCorrect: chosen.isCorrect,
     candidates: decorated,
     fallbackReason: reason,
+    modelName: "fallback_random",
   };
 }
 
@@ -533,7 +534,7 @@ async function requestOpenRouterGuess(
     }
     chosen = chosen || decorated[0];
 
-    return {
+  return {
       success: true,
       data: {
         countryName: chosen.countryName,
@@ -541,6 +542,7 @@ async function requestOpenRouterGuess(
         explanation: chosen.explanation,
         isCorrect: chosen.isCorrect,
         candidates: decorated,
+        modelName,
         ...(isFallbackModel ? { fallbackModel: true } : {}),
       },
     };
@@ -577,7 +579,7 @@ async function fetchAiGuess(round) {
     return tertiaryResult.data;
   }
 
-  return fallbackAiGuess(round, "primary_and_fallback_failed");
+  return fallbackAiGuess(round, "all_models_failed");
 }
 
 function pruneExpiredMatches(now = Date.now()) {
@@ -942,6 +944,7 @@ app.get("/test-ai", async (req, res) => {
     res.json({
       ...aiGuess,
       imageUrl: imagePayload.imageUrl,
+      modelUsed: aiGuess.modelName || null,
     });
   } catch (e) {
     console.error(e);
