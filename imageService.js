@@ -148,7 +148,8 @@ function randomLandBBox() {
   return box;
 }
 
-async function getRandomMapillaryImage(token) {
+async function getRandomMapillaryImage(token, { pano = false } = {}) {
+  const panoFlag = pano ? "true" : "false";
   // 1) Try 3 random cities FIRST
   console.log("Trying 3 city fallbacks");
   const cities1 = getRandomCityFallbackBBoxes(3);
@@ -163,7 +164,7 @@ async function getRandomMapillaryImage(token) {
       "bbox",
       `${c.left.toFixed(6)},${c.bottom.toFixed(6)},${c.right.toFixed(6)},${c.top.toFixed(6)}`,
     );
-    params.set("is_pano", "false");
+    params.set("is_pano", panoFlag);
     params.set("limit", "50");
     try {
       const searchUrl = `https://graph.mapillary.com/images?${params.toString()}`;
@@ -203,7 +204,7 @@ async function getRandomMapillaryImage(token) {
       "bbox",
       `${bbox.left.toFixed(6)},${bbox.bottom.toFixed(6)},${bbox.right.toFixed(6)},${bbox.top.toFixed(6)}`,
     );
-    params.set("is_pano", "false");
+    params.set("is_pano", panoFlag);
     params.set("limit", "35");
     try {
       const searchUrl = `https://graph.mapillary.com/images?${params.toString()}`;
@@ -249,7 +250,7 @@ async function getRandomMapillaryImage(token) {
       "bbox",
       `${c.left.toFixed(6)},${c.bottom.toFixed(6)},${c.right.toFixed(6)},${c.top.toFixed(6)}`,
     );
-    params.set("is_pano", "false");
+    params.set("is_pano", panoFlag);
     params.set("limit", "50");
     try {
       const searchUrl = `https://graph.mapillary.com/images?${params.toString()}`;
@@ -290,7 +291,7 @@ async function getRandomMapillaryImage(token) {
       "bbox",
       `${bbox.left.toFixed(6)},${bbox.bottom.toFixed(6)},${bbox.right.toFixed(6)},${bbox.top.toFixed(6)}`,
     );
-    params.set("is_pano", "false");
+    params.set("is_pano", panoFlag);
     params.set("limit", "50");
     try {
       const searchUrl = `https://graph.mapillary.com/images?${params.toString()}`;
@@ -336,7 +337,7 @@ async function getRandomMapillaryImage(token) {
       "bbox",
       `${bbox.left.toFixed(6)},${bbox.bottom.toFixed(6)},${bbox.right.toFixed(6)},${bbox.top.toFixed(6)}`,
     );
-    params.set("is_pano", "false");
+    params.set("is_pano", panoFlag);
     params.set("limit", "50");
     try {
       const searchUrl = `https://graph.mapillary.com/images?${params.toString()}`;

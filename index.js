@@ -13,6 +13,7 @@ const {
   fillCache,
   refillCache,
 } = require("./imageService.js");
+const { getPanoPayload, fillPanoCache } = require("./360service.js");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -681,6 +682,52 @@ app.get("/getImage", async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Public endpoint: Get random panorama
+app.get("/getPano", async (req, res) => {
+  try {
+    const payload = await getPanoPayload();
+    res.json(payload);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Cron endpoint: warm pano cache
+app.get("/warm/pano", async (req, res) => {
+  try {
+    if (!process.env.MAP_API_KEY) {
+      return res.status(500).json({ error: "missing_mapillary_token" });
+    }
+    const requested = Number(req.query.count);
+    const target = Math.max(1, Math.min(20, Number.isFinite(requested) ? requested : 5));
+    await fillPanoCache(target);
+    res.json({ status: "ok", filled: target });
+  } catch (e) {
+    console.error("Pano warm error", e && e.message);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// Cron endpoint: warm image cache
+app.get("/warm/images", async (req, res) => {
+  try {
+    if (!process.env.MAP_API_KEY) {
+      return res.status(500).json({ error: "missing_mapillary_token" });
+    }
+    const requested = Number(req.query.count);
+    const target = Math.max(
+      1,
+      Math.min(30, Number.isFinite(requested) ? requested : 10),
+    );
+    await fillCache(target);
+    res.json({ status: "ok", filled: target });
+  } catch (e) {
+    console.error("Image warm error", e && e.message);
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
