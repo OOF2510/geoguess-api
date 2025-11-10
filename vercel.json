@@ -11,15 +11,5 @@
       "src": "/(.*)",
       "dest": "index.js"
     }
-  ],
-  "crons": [
-    {
-      "path": "/warm/pano",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/warm/images",
-      "schedule": "*/15 * * * *"
-    }
   ]
 }
