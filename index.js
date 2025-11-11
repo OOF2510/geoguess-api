@@ -966,6 +966,7 @@ app.get("/leaderboard/top", async (req, res) => {
       rank: index + 1,
       score: s.score,
       createdAt: s.createdAt,
+      gameSessionId: s.gameSessionId ? s.gameSessionId.toString() : null,
     }));
 
     res.json(leaderboard);
