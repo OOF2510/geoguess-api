@@ -887,12 +887,12 @@ async function reverseGeocodeCountry(lat, lon) {
     return fallbackInfo;
   }
 
-  // Fallback 2: Geocode.xyz
-  console.log(`Trying Geocode.xyz fallback for (${lat}, ${lon})`);
-  const geocodeXyzInfo = await reverseGeocodeXyzService(lat, lon);
-  if (geocodeXyzInfo) {
-    console.log(`Successfully geocoded (${lat}, ${lon}) using Geocode.xyz`);
-    return geocodeXyzInfo;
+  // Fallback 2: Open-Meteo
+  console.log(`Trying Open-Meteo fallback for (${lat}, ${lon})`);
+  const openMeteoInfo = await reverseGeocodeOpenMeteo(lat, lon);
+  if (openMeteoInfo) {
+    console.log(`Successfully geocoded (${lat}, ${lon}) using Open-Meteo`);
+    return openMeteoInfo;
   }
 
   // Fallback 3: GeoNames
@@ -976,29 +976,25 @@ async function reverseGeocodeFallbackService(lat, lon) {
   }
 }
 
-// Fallback service 2: Geocode.xyz
-async function reverseGeocodeXyzService(lat, lon) {
+async function reverseGeocodeOpenMeteo(lat, lon) {
   try {
-    const res = await axios.get("https://geocode.xyz/" + lat + "," + lon, {
-      params: {
-        json: 1,
-        geoit: "json",
+    const res = await axios.get(
+      "https://geocoding-api.open-meteo.com/v1/reverse",
+      {
+        params: {
+          latitude: lat,
+          longitude: lon,
+          language: "en",
+        },
+        headers: { "User-Agent": "geoguess-api/1.0" },
+        timeout: 10000,
       },
-      headers: { "User-Agent": "geoguess-api/1.0" },
-      timeout: 12000,
-    });
+    );
 
     const data = res.data || {};
-    let countryName = (data.country || "").trim();
-    const countryCode = (data.prov || data.countrycode || "")
-      .trim()
-      .toUpperCase();
-
-    // Filter out error messages
-    if (countryName.includes("Throttled") || countryName.includes("error")) {
-      console.log("Geocode.xyz throttled or error response");
-      return null;
-    }
+    const first = (data.results && data.results[0]) || {};
+    let countryName = (first.country || "").trim();
+    const countryCode = (first.country_code || "").trim().toUpperCase();
 
     if (!countryName && countryCode) {
       const fallbackName = getCountryNameFromISO(countryCode);
@@ -1008,7 +1004,7 @@ async function reverseGeocodeXyzService(lat, lon) {
     }
 
     if (!countryName && !countryCode) {
-      console.log("Geocode.xyz returned no country data");
+      console.log("Open-Meteo returned no country data");
       return null;
     }
 
@@ -1028,7 +1024,10 @@ async function reverseGeocodeXyzService(lat, lon) {
 
     return result;
   } catch (error) {
-    console.error("Geocode.xyz reverse geocode error:", error && error.message);
+    console.error(
+      "Open-Meteo reverse geocode error:",
+      error && error.message,
+    );
     return null;
   }
 }
