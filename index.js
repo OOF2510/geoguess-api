@@ -389,7 +389,7 @@ const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout:free";
 
 const TERTIARY_MODEL =
-  process.env.TERTIARY_MODEL || "openrouter/polaris-alpha";
+  process.env.TERTIARY_MODEL || "qwen/qwen2.5-vl-32b-instruct:free";
 
 async function requestOpenRouterGuess(
   round,
