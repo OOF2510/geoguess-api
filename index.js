@@ -976,6 +976,65 @@ app.get("/leaderboard/top", async (req, res) => {
   }
 });
 
+// Proxy endpoint for panorama images (handles CORS issues)
+app.get("/proxy-image", async (req, res) => {
+  try {
+    const imageUrl = req.query.url;
+    
+    if (!imageUrl) {
+      return res.status(400).json({ error: "missing_url_parameter" });
+    }
+
+    // Validate URL to prevent abuse
+    try {
+      const url = new URL(imageUrl);
+      // Only allow specific domains (Facebook CDN for Mapillary images)
+      const allowedDomains = [
+        'fbcdn.net',
+        'scontent',
+        'mapillary.com',
+        'graph.mapillary.com'
+      ];
+      
+      const isAllowed = allowedDomains.some(domain => 
+        url.hostname.includes(domain)
+      );
+      
+      if (!isAllowed) {
+        return res.status(403).json({ error: "domain_not_allowed" });
+      }
+    } catch (e) {
+      return res.status(400).json({ error: "invalid_url" });
+    }
+
+    // Fetch the image
+    const response = await fetch(imageUrl);
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch image: ${response.status}`);
+      return res.status(response.status).json({ 
+        error: "upstream_fetch_failed",
+        status: response.status 
+      });
+    }
+
+    // Get the image buffer
+    const buffer = await response.arrayBuffer();
+    
+    // Set appropriate headers
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    res.set('Content-Type', contentType);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+    
+    // Send the image
+    res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error("Proxy image error:", error);
+    res.status(500).json({ error: "proxy_error" });
+  }
+});
+
 // Health check
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
