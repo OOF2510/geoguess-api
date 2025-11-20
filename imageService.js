@@ -3,7 +3,7 @@ const https = require("https");
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
 const imageCache = [];
-const FILL_CACHE_CONCURRENCY = 4;
+const FILL_CACHE_CONCURRENCY = 5;
 let backgroundFillPromise = null;
 const MAX_IMAGES_PER_COUNTRY = 2;
 const MAPILLARY_RATE_LIMIT = 900; // stay safely under the official 1000 req/min cap

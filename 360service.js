@@ -4,7 +4,7 @@ const {
 } = require("./imageService.js");
 
 const panoCache = [];
-const FILL_CACHE_CONCURRENCY = 4;
+const FILL_CACHE_CONCURRENCY = 5;
 const MAX_PANOS_PER_COUNTRY = 2;
 let backgroundFillPromise = null;
 
@@ -162,7 +162,14 @@ async function getPanoPayload() {
 
   refillPanoCache();
 
-  const cachedPano = panoCache.pop();
+  if (panoCache.length === 0) {
+    throw new Error(
+      "Could not fetch a cached panorama right now. Please try again.",
+    );
+  }
+
+  const idx = Math.floor(Math.random() * panoCache.length);
+  const cachedPano = panoCache.splice(idx, 1)[0];
   if (!cachedPano) {
     throw new Error(
       "Could not fetch a cached panorama right now. Please try again.",
