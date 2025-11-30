@@ -383,7 +383,7 @@ function fallbackAiGuess(round, reason) {
 
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL ||
-  "mistralai/mistral-small-3.1-24b-instruct:free";
+  "meta-llama/llama-4-scout";
 
 const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL || "google/gemma-3-27b-it:free";
@@ -405,6 +405,35 @@ async function requestOpenRouterGuess(
   const metadata = `Supporting metadata:\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
 
   try {
+    const body = {
+      model: modelName,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageUrl } },
+            { type: "text", text: metadata },
+          ],
+        },
+      ],
+      temperature: 0.15,
+      max_output_tokens: 350,
+      top_p: 0.7,
+    };
+
+    // For the primary model only, force the Groq provider on OpenRouter
+    if (!isFallbackModel) {
+      body.provider = {
+        only: ["groq"],
+      };
+    }
+
     const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -413,27 +442,7 @@ async function requestOpenRouterGuess(
         "HTTP-Referer": "https://github.com/oof2510/geoguessapp",
         "X-Title": "GeoFinder AI Duel",
       },
-      body: JSON.stringify({
-        model: modelName,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: imageUrl } },
-              { type: "text", text: metadata },
-            ],
-          },
-        ],
-        temperature: 0.15,
-        max_output_tokens: 350,
-        top_p: 0.7,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -535,7 +544,7 @@ async function requestOpenRouterGuess(
     }
     chosen = chosen || decorated[0];
 
-  return {
+    return {
       success: true,
       data: {
         countryName: chosen.countryName,
