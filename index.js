@@ -383,13 +383,13 @@ function fallbackAiGuess(round, reason) {
 
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL ||
-  "mistralai/mistral-small-3.2-24b-instruct:free";
+  "mistralai/mistral-small-3.1-24b-instruct:free";
 
 const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL || "google/gemma-3-27b-it:free";
 
 const TERTIARY_MODEL =
-  process.env.TERTIARY_MODEL || "qwen/qwen2.5-vl-32b-instruct:free";
+  process.env.TERTIARY_MODEL || "nvidia/nemotron-nano-12b-v2-vl:free";
 
 async function requestOpenRouterGuess(
   round,
