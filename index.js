@@ -1046,7 +1046,7 @@ app.get("/proxy-image", async (req, res) => {
 
 // Health check
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", timestamp: new Date().toISOString(), runtime: process.versions });
 });
 
 app.get("/test-ai", async (req, res) => {
