@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "author": "OOF2510",
   "engines": {
-    "node": ">=20.0.0"
+    "bun": ">=1.0.0"
   },
   "scripts": {
     "start": "bun ./index.js"
