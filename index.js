@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const { MongoClient, ObjectId } = require("mongodb");
 const crypto = require("crypto");
-
+const { MultiProviderAi } = require("@oof2510/llmjs")
 const admin = require("firebase-admin");
 const cors = require("cors");
 
@@ -16,7 +16,7 @@ const {
 const { getPanoPayload, fillPanoCache } = require("./360service.js");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 443;
 app.use(express.json());
 
 const AI_MATCH_ROUNDS = parseInt(process.env.AI_MATCH_ROUNDS, 10) || 5;
@@ -25,6 +25,9 @@ const AI_MATCH_EXPIRY_MINUTES =
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || "";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+
 
 const aiMatches = new Map();
 
@@ -383,19 +386,40 @@ function fallbackAiGuess(round, reason) {
 
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL ||
-  "meta-llama/llama-4-scout";
+  "google/gemma-3-27b-it:free"; 
 
 const FALLBACK_MODEL =
-  process.env.FALLBACK_MODEL || "google/gemma-3-27b-it:free";
+  process.env.FALLBACK_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct"; //groq
 
 const TERTIARY_MODEL =
-  process.env.TERTIARY_MODEL || "nvidia/nemotron-nano-12b-v2-vl:free";
+  process.env.TERTIARY_MODEL || "ministral-14b-latest"; //mistral
 
-async function requestOpenRouterGuess(
-  round,
-  modelName,
-  { isFallbackModel = false } = {},
-) {
+
+const aiClient = new MultiProviderAi({
+  apiKeys: {
+    openrouter: OPENROUTER_API_KEY,
+    mistral: MISTRAL_API_KEY,
+    groq: GROQ_API_KEY,
+  },
+  temperature: 0.22,
+  maxTokens: 700,
+  requestTimeoutMs: 30000,
+  firstToFinish: true,
+  defaultHeaders: {
+      "HTTP-Referer": "https://github.com/oof2510/geofinder",
+      "X-Title": "GeoFinder AI Duel",
+  },
+  model: {
+    provider: 'openrouter',
+    name: OPENROUTER_MODEL,
+  },
+  fallbackModels: {
+    groq: [FALLBACK_MODEL],
+    mistral: [TERTIARY_MODEL],
+  }
+})
+
+async function requestAiGuess(round) {
   const { coordinates, countryName, countryCode, imageUrl } = round;
   const { lat, lon } = coordinates;
   const hemisphereSummary = summarizeHemisphere(lat, lon);
@@ -405,70 +429,28 @@ async function requestOpenRouterGuess(
   const metadata = `Supporting metadata:\n- Hemispheres: ${hemisphereSummary}\n- Approximate climate band: ${band}`;
 
   try {
-    const body = {
-      model: modelName,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageUrl } },
-            { type: "text", text: metadata },
-          ],
-        },
-      ],
-      temperature: 0.15,
-      max_output_tokens: 350,
-      top_p: 0.7,
+    const imageAttachment = {
+      type: 'image',
+      url: imageUrl
     };
 
-    // For the primary model only, force the Groq provider on OpenRouter
-    if (!isFallbackModel) {
-      body.provider = {
-        only: ["groq"],
-      };
-    }
-
-    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://github.com/oof2510/geoguessapp",
-        "X-Title": "GeoFinder AI Duel",
-      },
-      body: JSON.stringify(body),
+    const response = await aiClient.ask({
+      user: prompt + '\n\n' + metadata,
+      system: "You are an assistant that only returns valid JSON responses representing GeoGuessr-style country guesses.",
+      attachments: [imageAttachment]
     });
 
-    if (!response.ok) {
-      console.error(
-        `${isFallbackModel ? "Fallback" : "Primary"} model request failed`,
-        response.status,
-        await response.text(),
-      );
-      return { success: false, reason: "bad_response" };
-    }
-
-    const data = await response.json();
-    const choice = data && data.choices && data.choices[0];
-    if (!choice || !choice.message || !choice.message.content) {
+    if (!response || !response.content) {
       return { success: false, reason: "empty_response" };
     }
 
-    const raw = choice.message.content.trim();
+    const raw = response.content.trim();
     let parsed;
     try {
       parsed = JSON.parse(raw.replace(/```json|```/g, ""));
     } catch (err) {
       console.error(
-        `Failed to parse ${
-          isFallbackModel ? "fallback" : "primary"
-        } model response`,
+        `Failed to parse AI model response`,
         raw,
         err,
       );
@@ -491,9 +473,7 @@ async function requestOpenRouterGuess(
         const explanation =
           typeof guess.explanation === "string" && guess.explanation.trim()
             ? guess.explanation.trim()
-            : isFallbackModel
-              ? "Guess derived from fallback model output."
-              : "Guess derived from OpenRouter model output.";
+            : "Guess derived from AI model output.";
 
         const confidence =
           typeof guess.confidence === "number" && guess.confidence >= 0
@@ -552,13 +532,11 @@ async function requestOpenRouterGuess(
         explanation: chosen.explanation,
         isCorrect: chosen.isCorrect,
         candidates: decorated,
-        modelName,
-        ...(isFallbackModel ? { fallbackModel: true } : {}),
       },
     };
   } catch (error) {
     console.error(
-      `${isFallbackModel ? "Fallback" : "Primary"} model call failed`,
+      `AI model call failed`,
       error,
     );
     return { success: false, reason: "request_failure" };
@@ -570,23 +548,9 @@ async function fetchAiGuess(round) {
     return fallbackAiGuess(round, "missing_api_key");
   }
 
-  const primaryResult = await requestOpenRouterGuess(round, OPENROUTER_MODEL);
-  if (primaryResult.success) {
-    return primaryResult.data;
-  }
-
-  const fallbackResult = await requestOpenRouterGuess(round, FALLBACK_MODEL, {
-    isFallbackModel: true,
-  });
-  if (fallbackResult.success) {
-    return fallbackResult.data;
-  }
-
-  const tertiaryResult = await requestOpenRouterGuess(round, TERTIARY_MODEL, {
-    isFallbackModel: true,
-  });
-  if (tertiaryResult.success) {
-    return tertiaryResult.data;
+  const result = await requestAiGuess(round);
+  if (result.success) {
+    return result.data;
   }
 
   return fallbackAiGuess(round, "all_models_failed");
@@ -1077,6 +1041,13 @@ app.get("/test-ai", async (req, res) => {
     console.error("Failed to pre-fill cache:", error);
   }
 })();
+
+// Start server on PORT (local deployment only)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
 // Vercel serverless function export
 module.exports = app;
