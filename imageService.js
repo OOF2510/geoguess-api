@@ -1,5 +1,5 @@
-const axios = require("axios");
-const https = require("https");
+import axios from "axios";
+import https from "https";
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
 const imageCache = [];
@@ -1408,7 +1408,7 @@ async function refillCache() {
   }
 }
 
-module.exports = {
+export {
   imageCache,
   getRandomMapillaryImage,
   reverseGeocodeCountry,

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "bunVersion": "1.x",
+  "bunVersion": "1.3.x",
   "routes": [
     {
       "src": "/(.*)",

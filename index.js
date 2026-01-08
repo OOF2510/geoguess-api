@@ -1,23 +1,21 @@
-require("dotenv").config();
-const express = require("express");
-const { MongoClient, ObjectId } = require("mongodb");
-const crypto = require("crypto");
+import { Hono } from "hono";
+import { MongoClient, ObjectId } from "mongodb";
+import crypto from "crypto";
 
-const admin = require("firebase-admin");
-const cors = require("cors");
+import admin from "firebase-admin";
+import { cors } from "hono/cors";
 
-const {
+import {
   imageCache,
   getRandomMapillaryImage,
   reverseGeocodeCountry,
   fillCache,
   refillCache,
-} = require("./imageService.js");
-const { getPanoPayload, fillPanoCache } = require("./360service.js");
+} from "./imageService.js";
+import { getPanoPayload, fillPanoCache } from "./360service.js";
 
-const app = express();
+const app = new Hono();
 const PORT = process.env.PORT || 8080;
-app.use(express.json());
 
 const AI_MATCH_ROUNDS = parseInt(process.env.AI_MATCH_ROUNDS, 10) || 5;
 const AI_MATCH_EXPIRY_MINUTES =
@@ -98,17 +96,17 @@ const allowedAppIds = process.env.FIREBASE_APP_IDS
       .filter(Boolean)
   : [];
 
-async function verifyFirebaseAppCheck(req, res, next) {
+async function verifyFirebaseAppCheck(ctx, next) {
   const appCheck = getFirebaseAppCheckInstance();
 
   if (!appCheck) {
-    return res.status(500).json({ error: "app_check_not_configured" });
+    return ctx.json({ error: "app_check_not_configured" }, 500);
   }
 
-  const token = req.header("X-Firebase-AppCheck");
+  const token = ctx.req.header("X-Firebase-AppCheck");
 
   if (!token) {
-    return res.status(401).json({ error: "missing_app_check_token" });
+    return ctx.json({ error: "missing_app_check_token" }, 401);
   }
 
   try {
@@ -118,20 +116,21 @@ async function verifyFirebaseAppCheck(req, res, next) {
       allowedAppIds.length > 0 &&
       !allowedAppIds.includes(decodedToken.appId)
     ) {
-      return res.status(401).json({ error: "app_check_app_id_mismatch" });
+      return ctx.json({ error: "app_check_app_id_mismatch" }, 401);
     }
 
-    req.appCheckToken = decodedToken;
-    next();
+    ctx.set("appCheckToken", decodedToken);
+    await next();
   } catch (error) {
     console.error("App Check token verification failed:", error);
-    return res.status(401).json({ error: "invalid_app_check_token" });
+    return ctx.json({ error: "invalid_app_check_token" }, 401);
   }
 }
 
 app.use(
+  "*",
   cors({
-    origin: true,
+    origin: "*",
     credentials: true,
   }),
 );
@@ -684,64 +683,64 @@ function buildRoundSummary(round) {
 }
 
 // Public endpoint: Get random image
-app.get("/getImage", async (req, res) => {
+app.get("/getImage", async (ctx) => {
   try {
     const payload = await getImagePayload();
-    res.json(payload);
+    return ctx.json(payload);
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "Internal server error" });
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Public endpoint: Get random panorama
-app.get("/getPano", async (req, res) => {
+app.get("/getPano", async (ctx) => {
   try {
     const payload = await getPanoPayload();
-    res.json(payload);
+    return ctx.json(payload);
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "Internal server error" });
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Cron endpoint: warm pano cache
-app.get("/warm/pano", async (req, res) => {
+app.get("/warm/pano", async (ctx) => {
   try {
     if (!process.env.MAP_API_KEY) {
-      return res.status(500).json({ error: "missing_mapillary_token" });
+      return ctx.json({ error: "missing_mapillary_token" }, 500);
     }
-    const requested = Number(req.query.count);
+    const requested = Number(ctx.req.query("count"));
     const target = Math.max(1, Math.min(20, Number.isFinite(requested) ? requested : 5));
     await fillPanoCache(target);
-    res.json({ status: "ok", filled: target });
+    return ctx.json({ status: "ok", filled: target });
   } catch (e) {
-    console.error("Pano warm error", e && e.message);
-    res.status(500).json({ error: "internal_error" });
+    console.error("Pano warm error", e.message);
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Cron endpoint: warm image cache
-app.get("/warm/images", async (req, res) => {
+app.get("/warm/images", async (ctx) => {
   try {
     if (!process.env.MAP_API_KEY) {
-      return res.status(500).json({ error: "missing_mapillary_token" });
+      return ctx.json({ error: "missing_mapillary_token" }, 500);
     }
-    const requested = Number(req.query.count);
+    const requested = Number(ctx.req.query("count"));
     const target = Math.max(
       1,
       Math.min(30, Number.isFinite(requested) ? requested : 10),
     );
     await fillCache(target);
-    res.json({ status: "ok", filled: target });
+    return ctx.json({ status: "ok", filled: target });
   } catch (e) {
-    console.error("Image warm error", e && e.message);
-    res.status(500).json({ error: "internal_error" });
+    console.error("Image warm error", e.message);
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Game start: Create game session
-app.post("/game/start", verifyFirebaseAppCheck, async (req, res) => {
+app.post("/game/start", verifyFirebaseAppCheck, async (ctx) => {
   try {
     await initializeDatabase();
 
@@ -758,26 +757,26 @@ app.post("/game/start", verifyFirebaseAppCheck, async (req, res) => {
       used: false,
     });
 
-    res.json({
+    return ctx.json({
       gameSessionId: result.insertedId.toString(),
       seed,
       expiresAt: expiresAt.toISOString(),
     });
   } catch (err) {
     console.error("Error starting game:", err);
-    res.status(500).json({ error: "server_error" });
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Submit score
-app.post("/game/submit", verifyFirebaseAppCheck, async (req, res) => {
+app.post("/game/submit", verifyFirebaseAppCheck, async (ctx) => {
   try {
     await initializeDatabase();
-    const { gameSessionId, score, metadata } = req.body;
+    const { gameSessionId, score, metadata } = await ctx.req.json();
 
     // Validate input
     if (!gameSessionId || typeof score !== "number") {
-      return res.status(400).json({ error: "bad_request" });
+      return ctx.json({ error: "bad_request" }, 400);
     }
 
     // Convert gameSessionId to ObjectId
@@ -785,32 +784,32 @@ app.post("/game/submit", verifyFirebaseAppCheck, async (req, res) => {
     try {
       gsId = new ObjectId(gameSessionId);
     } catch (e) {
-      return res.status(400).json({ error: "invalid_game_session_id" });
+      return ctx.json({ error: "invalid_game_session_id" }, 400);
     }
 
     // Find game session
     const gs = await gameSessions.findOne({ _id: gsId });
     if (!gs) {
-      return res.status(400).json({ error: "session_missing" });
+      return ctx.json({ error: "session_missing" }, 400);
     }
 
     // Validate game session
     if (gs.used) {
-      return res.status(400).json({ error: "session_already_used" });
+      return ctx.json({ error: "session_already_used" }, 400);
     }
 
     if (new Date() > gs.expiresAt) {
-      return res.status(400).json({ error: "session_expired" });
+      return ctx.json({ error: "session_expired" }, 400);
     }
 
     // Plausibility checks
     if (score < 0) {
-      return res.status(400).json({ error: "invalid_score" });
+      return ctx.json({ error: "invalid_score" }, 400);
     }
 
     const maxPossible = 100000;
     if (score > maxPossible) {
-      return res.status(400).json({ error: "impossible_score" });
+      return ctx.json({ error: "impossible_score" }, 400);
     }
 
     // Mark game session as used
@@ -824,19 +823,19 @@ app.post("/game/submit", verifyFirebaseAppCheck, async (req, res) => {
       metadata: metadata || {},
     });
 
-    res.json({ ok: true });
+    return ctx.json({ ok: true });
   } catch (err) {
     console.error("Error submitting score:", err);
-    res.status(500).json({ error: "server_error" });
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
-app.post("/ai-duel/start", verifyFirebaseAppCheck, async (req, res) => {
+app.post("/ai-duel/start", verifyFirebaseAppCheck, async (ctx) => {
   try {
     pruneExpiredMatches();
     const match = await createAiMatch();
     const firstRound = serializeRoundForClient(match.rounds[0]);
-    res.json({
+    return ctx.json({
       matchId: match.id,
       totalRounds: match.totalRounds,
       round: firstRound,
@@ -845,45 +844,45 @@ app.post("/ai-duel/start", verifyFirebaseAppCheck, async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to start AI duel", error);
-    res.status(500).json({ error: "ai_duel_start_failed" });
+    return ctx.json({ error: "ai_duel_start_failed" }, 500);
   }
 });
 
-app.post("/ai-duel/guess", verifyFirebaseAppCheck, async (req, res) => {
+app.post("/ai-duel/guess", verifyFirebaseAppCheck, async (ctx) => {
   try {
-    const { matchId, roundIndex, guess } = req.body || {};
+    const { matchId, roundIndex, guess } = await ctx.req.json();
 
     if (!matchId || typeof roundIndex !== "number" || roundIndex < 0) {
-      return res.status(400).json({ error: "invalid_request" });
+      return ctx.json({ error: "invalid_request" }, 400);
     }
 
     pruneExpiredMatches();
     const match = getMatch(matchId);
     if (!match) {
-      return res.status(404).json({ error: "match_not_found" });
+      return ctx.json({ error: "match_not_found" }, 404);
     }
 
     if (match.status === "completed") {
-      return res.status(409).json({
+      return ctx.json({
         error: "match_completed",
         scores: { player: match.playerScore, ai: match.aiScore },
         history: match.history,
-      });
+      }, 409);
     }
 
     if (roundIndex !== match.currentRound) {
       const currentRound = serializeRoundForClient(
         match.rounds[match.currentRound],
       );
-      return res.status(409).json({
+      return ctx.json({
         error: "round_out_of_sync",
         expectedRound: currentRound,
-      });
+      }, 409);
     }
 
     const round = match.rounds[roundIndex];
     if (!round) {
-      return res.status(400).json({ error: "round_not_found" });
+      return ctx.json({ error: "round_not_found" }, 400);
     }
 
     if (!round.resolved) {
@@ -949,18 +948,18 @@ app.post("/ai-duel/guess", verifyFirebaseAppCheck, async (req, res) => {
       );
     }
 
-    res.json(payload);
+    return ctx.json(payload);
   } catch (error) {
     console.error("Failed to process AI duel guess", error);
-    res.status(500).json({ error: "ai_duel_guess_failed" });
+    return ctx.json({ error: "ai_duel_guess_failed" }, 500);
   }
 });
 
 // Leaderboard: Get top scores (public)
-app.get("/leaderboard/top", async (req, res) => {
+app.get("/leaderboard/top", async (ctx) => {
   try {
     await initializeDatabase();
-    const limit = parseInt(req.query.limit) || 50;
+    const limit = parseInt(ctx.req.query("limit")) || 50;
     const maxLimit = 100;
     const finalLimit = Math.min(limit, maxLimit);
 
@@ -978,20 +977,20 @@ app.get("/leaderboard/top", async (req, res) => {
       gameSessionId: s.gameSessionId ? s.gameSessionId.toString() : null,
     }));
 
-    res.json(leaderboard);
+    return ctx.json(leaderboard);
   } catch (err) {
     console.error("Error fetching leaderboard:", err);
-    res.status(500).json({ error: "server_error" });
+    return ctx.json({ error: "server_error" }, 500);
   }
 });
 
 // Proxy endpoint for panorama images (handles CORS issues)
-app.get("/proxy-image", async (req, res) => {
+app.get("/proxy-image", async (ctx) => {
   try {
-    const imageUrl = req.query.url;
+    const imageUrl = ctx.req.query("url");
     
     if (!imageUrl) {
-      return res.status(400).json({ error: "missing_url_parameter" });
+      return ctx.json({ error: "missing_url_parameter" }, 400);
     }
 
     // Validate URL to prevent abuse
@@ -1010,10 +1009,10 @@ app.get("/proxy-image", async (req, res) => {
       );
       
       if (!isAllowed) {
-        return res.status(403).json({ error: "domain_not_allowed" });
+        return ctx.json({ error: "domain_not_allowed" }, 403);
       }
     } catch (e) {
-      return res.status(400).json({ error: "invalid_url" });
+      return ctx.json({ error: "invalid_url" }, 400);
     }
 
     // Fetch the image
@@ -1021,10 +1020,10 @@ app.get("/proxy-image", async (req, res) => {
     
     if (!response.ok) {
       console.error(`Failed to fetch image: ${response.status}`);
-      return res.status(response.status).json({ 
+      return ctx.json({ 
         error: "upstream_fetch_failed",
         status: response.status 
-      });
+      }, response.status);
     }
 
     // Get the image buffer
@@ -1032,39 +1031,41 @@ app.get("/proxy-image", async (req, res) => {
     
     // Set appropriate headers
     const contentType = response.headers.get('content-type') || 'image/jpeg';
-    res.set('Content-Type', contentType);
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
     
-    // Send the image
-    res.send(Buffer.from(buffer));
+    return new Response(Buffer.from(buffer), {
+      headers: {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=86400'
+      }
+    });
   } catch (error) {
     console.error("Proxy image error:", error);
-    res.status(500).json({ error: "proxy_error" });
+    return ctx.json({ error: "proxy_error" }, 500);
   }
 });
 
 // Health check
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString(), runtime: process.versions });
+app.get("/health", (ctx) => {
+  return ctx.json({ status: "ok", timestamp: new Date().toISOString(), runtime: process.versions });
 });
 
-app.get("/test-ai", async (req, res) => {
-  const key = req.query.key;
+app.get("/test-ai", async (ctx) => {
+  const key = ctx.req.query("key");
   if (key !== process.env.AI_TESTING_KEY) {
-    return res.status(401).json({ error: "Unauthorized" });
+    return ctx.json({ error: "Unauthorized" }, 401);
   }
   try {
     const imagePayload = await getImagePayload();
     const aiGuess = await fetchAiGuess(imagePayload);
-    res.json({
+    return ctx.json({
       ...aiGuess,
       imageUrl: imagePayload.imageUrl,
       modelUsed: aiGuess.modelName || null,
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "Internal server error" });
+    return ctx.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -1079,4 +1080,7 @@ app.get("/test-ai", async (req, res) => {
 })();
 
 // Vercel serverless function export
-module.exports = app;
+export default {
+  fetch: app.fetch,
+  port: PORT,
+}

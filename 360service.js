@@ -1,7 +1,7 @@
-const {
+import {
   getRandomMapillaryImage,
   reverseGeocodeCountry,
-} = require("./imageService.js");
+} from "./imageService.js";
 
 const panoCache = [];
 const FILL_CACHE_CONCURRENCY = 5;
@@ -194,7 +194,7 @@ async function getPanoPayload() {
   }
 })();
 
-module.exports = {
+export {
   panoCache,
   fetchAndStorePanorama,
   fillPanoCache,
