@@ -839,7 +839,7 @@ app.post("/game/submit", verifyFirebaseAppCheck, async (ctx) => {
 // Create a new 1v1 match hash for websocket auth (protected)
 app.post("/1v1/new", verifyFirebaseAppCheck, async (ctx) => {
   try {
-    const matchHash = Bun.hash(crypto.randomBytes(16))
+    const matchHash = Bun.hash(crypto.randomBytes(16)).toString();
     await Bun.redis.sadd("1v1_matches", matchHash)
     
     return ctx.json({ hash: matchHash, ok: true })
@@ -852,7 +852,7 @@ app.post("/1v1/new", verifyFirebaseAppCheck, async (ctx) => {
 // verify 1v1 hash
 app.post("/1v1/verify", async (ctx) => {
   try {
-    const matchHash = ctx.req.query("hash")
+    const matchHash = ctx.req.query("hash").toString();
     const isValid = await Bun.redis.sismember("1v1_matches", matchHash)
     
     return ctx.json({ ok: isValid })
