@@ -862,6 +862,18 @@ app.all("/1v1/verify", async (ctx) => {
   }
 })
 
+// Delete 1v1 match hash
+app.all("/1v1/end", async (ctx) => {
+  try {
+    const matchHash = ctx.req.query("hash").toString();
+    await Bun.redis.srem("1v1_matches", matchHash)
+    
+    return ctx.json({ ok: true })
+  } catch (error) {
+    console.error("Error deleting 1v1 game:", error);
+    return ctx.json({ error: "server_error" }, 500);
+  }
+})
 
 app.post("/ai-duel/start", verifyFirebaseAppCheck, async (ctx) => {
   try {
