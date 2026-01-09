@@ -98,6 +98,11 @@ const allowedAppIds = process.env.FIREBASE_APP_IDS
   : [];
 
 async function verifyFirebaseAppCheck(ctx, next) {
+  if ((ctx.req.query('bypassAppCheck') && process.env.FIREBASE_BYPASS_PW) && (ctx.req.query('bypassAppCheck') === process.env.FIREBASE_BYPASS_PW)) {
+    await next();
+    return;
+  }
+  
   const appCheck = getFirebaseAppCheckInstance();
 
   if (!appCheck) {
